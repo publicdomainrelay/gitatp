@@ -274,10 +274,12 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
     )
     return True
 
-atproto_index_read(client, atproto_index)
+if not int(os.environ.get("GITATP_NO_SYNC", "0")):
+    atproto_index_read(client, atproto_index)
 atproto_index_create(atproto_index, "vcs")
 atproto_index_create(atproto_index.entries["vcs"], "git")
-atproto_index_read(client, atproto_index.entries["vcs"].entries["git"])
+if not int(os.environ.get("GITATP_NO_SYNC", "0")):
+    atproto_index_read(client, atproto_index.entries["vcs"].entries["git"])
 
 # Configuration
 GIT_PROJECT_ROOT = args.repos_directory
@@ -405,7 +407,7 @@ def create_png_with_zip(zip_data):
 async def handle_git_backend_request(request):
     global hash_alg
 
-    path_info = request.match_info.get("path", "")
+    path_info = f"{request.match_info.get('repo', '')}.git/{request.match_info.get('path', '')}"
     env = {
         "GIT_PROJECT_ROOT": GIT_PROJECT_ROOT,
         "GIT_HTTP_EXPORT_ALL": GIT_HTTP_EXPORT_ALL,
@@ -533,7 +535,7 @@ async def handle_git_backend_request(request):
 
 # Set up the application
 app = web.Application()
-app.router.add_route("*", "/{path:.*}", handle_git_backend_request)
+app.router.add_route("*", "/{repo}.git/{path:.*}", handle_git_backend_request)
 
 if __name__ == "__main__":
     # Ensure there is a bare Git repository for testing

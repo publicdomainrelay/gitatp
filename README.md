@@ -17,6 +17,10 @@ rm -rf my-repo/ && git clone http://localhost:8080/my-repo.git && cd my-repo
 echo 2222 >> README.md && git add README.md && git commit -sm README.md && git push
 ```
 
+You can view repo files at: http://localhost:8080/my-repo/blob/HEAD/README.md
+
+![Screenshot of web view of code](https://github.com/user-attachments/assets/b7387416-7981-4f2d-bf1c-f3ffe6095f05)
+
 - References
   - https://github.com/publicdomainrelay/reference-implementation/issues/15
 
