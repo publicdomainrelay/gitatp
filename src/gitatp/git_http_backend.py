@@ -34,7 +34,7 @@ allowed_hash_algs = ['sha256', hash_alg, 'sha512']
 # os.environ["HOME"] = str(Path(__file__).parent.resolve())
 
 parser = argparse.ArgumentParser(prog='atproto-git', usage='%(prog)s [options]')
-parser.add_argument('--repos-directory', dest="repos_directory", help='directory for local copies of git repos')
+parser.add_argument('--repos-directory', required=True, dest="repos_directory", help='directory for local copies of git repos')
 args = parser.parse_args()
 
 config = configparser.ConfigParser()
@@ -116,6 +116,29 @@ def update_profile(client, pinned_post):
             "ATPROTO_PINNED_POST_CID": pinned_post.cid,
         },
     }
+    update_profile_deno_cache_path = Path(
+        "~", ".cache", "update_profile_deno_cache_path",
+    ).expanduser()
+    update_profile_deno_cache_path.mkdir(parents=True, exist_ok=True)
+
+    update_profile_deno_cache_path.joinpath(
+        ATPROTO_UPDATE_PROFILE_JS_PATH.name,
+    ).write_bytes(
+        ATPROTO_UPDATE_PROFILE_JS_PATH.read_bytes(),
+    )
+
+    if not update_profile_deno_cache_path.joinpath("deno.lock").exists():
+        cmd = [
+            "deno",
+            "add",
+            "npm:@atproto/api",
+        ]
+        proc_result = subprocess.run(
+            cmd,
+            cwd=str(update_profile_deno_cache_path.resolve()),
+        )
+        proc_result.check_returncode()
+
     cmd = [
         "deno",
         "--allow-env",
@@ -124,7 +147,7 @@ def update_profile(client, pinned_post):
     ]
     proc_result = subprocess.run(
         cmd,
-        cwd=str(ATPROTO_UPDATE_PROFILE_JS_PATH.parent.resolve()),
+        cwd=str(update_profile_deno_cache_path.resolve()),
         env=env,
     )
     proc_result.check_returncode()
