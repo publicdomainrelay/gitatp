@@ -47,7 +47,7 @@ except Exception as e:
 try:
     atproto_email = config["user"]["email"]
 except Exception as e:
-    raise Exception(f"You must run: $ git config --global user.atproto $USER.atproto-pds.fqdn.example.com") from e
+    raise Exception(f"You must run: $ git config --global user.email $USER@example.com") from e
 
 atproto_handle_username = atproto_handle.split(".")[0]
 atproto_base_url = "https://" + ".".join(atproto_handle.split(".")[1:])
