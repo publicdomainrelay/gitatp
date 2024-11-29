@@ -3,8 +3,8 @@ name = "gitatp"
 version = "0.1.0"
 description = "Git over ATproto"
 long_description_content_type = "text/markdown"
-long_description = file: README.md
-readme = "README.md"
+long_description = {file = "README.md", content-type = "text/markdown"}
+readme = {file = "README.md", content-type = "text/markdown"}
 authors = [
     { name = "John Andersen", email = "johnandersen777@protonmail.com" }
 ]
