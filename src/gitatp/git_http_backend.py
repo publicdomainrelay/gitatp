@@ -86,7 +86,7 @@ atexit.register(
         atproto_index.model_dump_json(),
     )
 )
-if atproto_index_path.exists():
+if False and atproto_index_path.exists():
     atproto_index = CacheATProtoIndex.model_validate_json(atproto_index_path.read_text())
 
 client = Client(
