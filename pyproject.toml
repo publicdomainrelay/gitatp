@@ -1,13 +1,12 @@
 [project]
 name = "gitatp"
-version = "0.1.5"
+version = "0.2.0"
 description = "Git over ATProto"
-long_description = "[![asciicast](https://asciinema.org/a/692702.svg)](https://asciinema.org/a/692702)"
-long_description_content_type = "text/markdown"
 readme = {file = "README.md", content-type = "text/markdown"}
 authors = [
     { name = "Public Domain", email = "publicdomainrelay@protonmail.com" }
 ]
+license = {text = "Unlicense"}
 requires-python = ">=3.12"
 dependencies = [
     "atproto>=0.0.55",
@@ -15,6 +14,10 @@ dependencies = [
     "pydantic>=2.10.2",
     "keyring>=25.5.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/publicdomainrelay/gitatp.git"
+Issues = "https://github.com/publicdomainrelay/gitatp/issues"
 
 [project.scripts]
 gitatp = "gitatp.cli:main"
