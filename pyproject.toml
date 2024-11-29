@@ -1,8 +1,8 @@
 [project]
 name = "gitatp"
 version = "0.1.0"
-description = "Git over ATproto"
-long_description = {file = "README.md", content-type = "text/markdown"}
+description = "Git over ATProto"
+long_description = "# Git over ATProto"
 long_description_content_type = "text/markdown"
 readme = {file = "README.md", content-type = "text/markdown"}
 authors = [
