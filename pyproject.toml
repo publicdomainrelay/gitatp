@@ -2,6 +2,7 @@
 name = "gitatp"
 version = "0.1.0"
 description = "Git over ATproto"
+long_description_content_type = "text/markdown"
 readme = "README.md"
 authors = [
     { name = "John Andersen", email = "johnandersen777@protonmail.com" }
