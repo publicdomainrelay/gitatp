@@ -1,6 +1,6 @@
 [project]
 name = "gitatp"
-version = "0.2.1"
+version = "0.2.2"
 description = "Git over ATProto"
 readme = {file = "README.md", content-type = "text/markdown"}
 authors = [
