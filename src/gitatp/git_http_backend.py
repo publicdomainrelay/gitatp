@@ -31,7 +31,7 @@ hash_alg = 'sha384'
 allowed_hash_algs = ['sha256', hash_alg, 'sha512']
 
 # TODO DEBUG REMOVE
-os.environ["HOME"] = str(Path(__file__).parent.resolve())
+# os.environ["HOME"] = str(Path(__file__).parent.resolve())
 
 parser = argparse.ArgumentParser(prog='atproto-git', usage='%(prog)s [options]')
 parser.add_argument('--repos-directory', dest="repos_directory", help='directory for local copies of git repos')
@@ -40,14 +40,26 @@ args = parser.parse_args()
 config = configparser.ConfigParser()
 config.read(str(Path("~", ".gitconfig").expanduser()))
 
-atproto_handle = config["user"]["atproto"]
+try:
+    atproto_handle = config["user"]["atproto"]
+except Exception as e:
+    raise Exception(f"You must run: $ git config --global user.atproto $USER.atproto-pds.fqdn.example.com") from e
+try:
+    atproto_email = config["user"]["email"]
+except Exception as e:
+    raise Exception(f"You must run: $ git config --global user.atproto $USER.atproto-pds.fqdn.example.com") from e
+
 atproto_handle_username = atproto_handle.split(".")[0]
 atproto_base_url = "https://" + ".".join(atproto_handle.split(".")[1:])
-atproto_email = config["user"]["email"]
-atproto_password = keyring.get_password(
-    atproto_email,
-    ".".join(["password", atproto_handle]),
-)
+keyring_atproto_password = ".".join(["password", atproto_handle])
+
+try:
+    atproto_password = keyring.get_password(
+        atproto_email,
+        keyring_atproto_password,
+    )
+except Exception as e:
+    raise Exception(f"You must run: $ python -m keyring set {atproto_email} {keyring_atproto_password}") from e
 
 class CacheATProtoBlob(BaseModel):
     hash_alg: str

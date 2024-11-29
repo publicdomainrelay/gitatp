@@ -1,6 +1,6 @@
 [project]
 name = "gitatp"
-version = "0.1.2"
+version = "0.1.3"
 description = "Git over ATProto"
 long_description = "# Git over ATProto"
 long_description_content_type = "text/markdown"
