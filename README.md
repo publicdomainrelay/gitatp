@@ -12,6 +12,9 @@ git config --global user.atproto $USER.atproto-pds.fqdn.example.com
 python -m keyring set $USER@example.com password.$USER.atproto-pds.fqdn.example.com
 
 python -m gitatp --repos-directory $HOME/.local/$USER-gitatp-repos
+
+rm -rf my-repo/ && git clone http://localhost:8080/my-repo.git && cd my-repo
+echo 2222 >> README.md && git add README.md && git commit -sm README.md && git push
 ```
 
 - References
