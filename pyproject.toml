@@ -1,6 +1,6 @@
 [project]
 name = "gitatp"
-version = "0.1.1"
+version = "0.1.2"
 description = "Git over ATProto"
 long_description = "# Git over ATProto"
 long_description_content_type = "text/markdown"
@@ -11,6 +11,9 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "atproto>=0.0.55",
+    "snoop>=0.6.0",
+    "pydantic>=2.10.2",
+    "keyring>=25.5.0",
 ]
 
 [project.scripts]
