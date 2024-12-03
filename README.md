@@ -13,11 +13,11 @@ python -m keyring set $USER@example.com password.$USER.atproto-pds.fqdn.example.
 
 python -m gitatp --repos-directory $HOME/.local/$USER-gitatp-repos
 
-rm -rf my-repo/ && git clone http://localhost:8080/my-repo.git && cd my-repo
+rm -rf my-repo/ && git clone http://localhost:8080/$USER.atproto-pds.fqdn.example.com/my-repo.git && cd my-repo
 echo 2222 >> README.md && git add README.md && git commit -sm README.md && git push
 ```
 
-You can view repo files at: http://localhost:8080/my-repo/blob/HEAD/README.md
+You can view repo files at: http://localhost:8080/$USER.atproto-pds.fqdn.example.com/my-repo/blob/HEAD/README.md
 
 ![Screenshot of web view of code](https://github.com/user-attachments/assets/b7387416-7981-4f2d-bf1c-f3ffe6095f05)
 

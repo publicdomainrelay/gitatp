@@ -343,17 +343,17 @@ def extract_zip_of_files(repo_path, blob, files):
 
 # TODO Do this directly on the git repos instead of having a repos dir
 
-def download_from_atproto_to_local_repos_directory_git(client, repo_name, index):
+def download_from_atproto_to_local_repos_directory_git(client, namespace, repo_name, index):
     # TODO Context for projects root
     global GIT_PROJECT_ROOT
     if not repo_name.endswith(".git"):
         repo_name = f"{repo_name}.git"
-    repo_path = Path(GIT_PROJECT_ROOT, repo_name)
+    repo_path = Path(GIT_PROJECT_ROOT, namespace, repo_name)
     for index_entry_key, index_entry in index.entries.items():
         if not index_entry.blob and not index_entry.blob.cid:
             warnings.warn(f"{index.blob.hash_alg!r} is not a file, offending index node: {pprint.pprint(json.loads(index.model_dump_json()))}")
         # TODO Probably should look at path traversal
-        internal_file = Path(GIT_PROJECT_ROOT, repo_name, index_entry.text)
+        internal_file = repo_path.joinpath(index_entry.text)
         repo_file_path = str(internal_file.relative_to(repo_path))
         re_download = False
         if not internal_file.exists():
@@ -383,7 +383,7 @@ def download_from_atproto_to_local_repos_directory_git(client, repo_name, index)
             print(f"Successful download of internal file to {repo_name}: {repo_file_path}")
 
 for repo_name, repo_index in atproto_index.entries["vcs"].entries["git"].entries.items():
-    download_from_atproto_to_local_repos_directory_git(client, repo_name, repo_index)
+    download_from_atproto_to_local_repos_directory_git(client, atproto_handle, repo_name, repo_index)
 
 # Create a zip archive containing the internal files
 def create_zip_of_files(repo_path, files):
@@ -407,9 +407,22 @@ def create_png_with_zip(zip_data):
 async def handle_git_backend_request(request):
     global hash_alg
 
-    path_info = f"{request.match_info.get('repo', '')}.git/{request.match_info.get('path', '')}"
+    namespace = request.match_info.get('namespace', '')
+    repo_name = request.match_info.get('repo', '')
+    if not repo_name.endswith(".git"):
+        repo_name = f"{repo_name}.git"
+
+    # Ensure there is a bare Git repository for testing
+    local_repo_path = Path(GIT_PROJECT_ROOT, namespace, repo_name)
+    if not local_repo_path.is_dir():
+        local_repo_path.parent.mkdir(parents=True, exist_ok=True)
+        os.system(f"git init --bare {local_repo_path}")
+        os.system(f"rm -rf {local_repo_path}/hooks/")
+        print(f"Initialized bare repository at {local_repo_path}")
+
+    path_info = f"{repo_name}/{request.match_info.get('path', '')}"
     env = {
-        "GIT_PROJECT_ROOT": GIT_PROJECT_ROOT,
+        "GIT_PROJECT_ROOT": str(local_repo_path.parent),
         "GIT_HTTP_EXPORT_ALL": GIT_HTTP_EXPORT_ALL,
         "PATH_INFO": f"/{path_info}",
         "REMOTE_USER": request.remote or "",
@@ -496,19 +509,17 @@ async def handle_git_backend_request(request):
     await proc.wait()
 
     # Handle push events (git-receive-pack)
-    print(f"path_info: {path_info}")
+    print(f"path_info: {namespace}/{path_info}")
     if path_info.endswith("git-receive-pack"):
-        repo_name = Path(path_info).parent.name
-        repo_path = Path(GIT_PROJECT_ROOT, repo_name)
         # TODO Better way for transparent .git on local repo directories
         if repo_name.endswith(".git"):
             repo_name = repo_name[:-4]
         atproto_index_create(atproto_index.entries["vcs"].entries["git"], repo_name)
-        for internal_file in list_git_internal_files(repo_path):
-            repo_file_path = str(internal_file.relative_to(repo_path))
+        for internal_file in list_git_internal_files(local_repo_path):
+            repo_file_path = str(internal_file.relative_to(local_repo_path))
 
             # Create zip archive of internal files
-            zip_data = create_zip_of_files(repo_path, [internal_file])
+            zip_data = create_zip_of_files(local_repo_path, [internal_file])
 
             # Create PNG with embedded zip
             png_zip_data = create_png_with_zip(zip_data)
@@ -535,16 +546,8 @@ async def handle_git_backend_request(request):
 
 # Set up the application
 app = web.Application()
-app.router.add_route("*", "/{repo}.git/{path:.*}", handle_git_backend_request)
+app.router.add_route("*", "/{namespace}/{repo}.git/{path:.*}", handle_git_backend_request)
 
 if __name__ == "__main__":
-    # Ensure there is a bare Git repository for testing
-    test_repo_path = os.path.join(GIT_PROJECT_ROOT, "my-repo.git")
-    if not os.path.exists(test_repo_path):
-        os.makedirs(GIT_PROJECT_ROOT, exist_ok=True)
-        os.system(f"git init --bare {test_repo_path}")
-        os.system(f"rm -rf {test_repo_path}/hooks/")
-        print(f"Initialized bare repository at {test_repo_path}")
-
     # Start the server
     web.run_app(app, host="0.0.0.0", port=8080)

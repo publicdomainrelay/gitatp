@@ -44,14 +44,14 @@ from pydantic import BaseModel, Field
 fastapi_app = FastAPI()
 
 @fastapi_app.get(
-    "/{repo_name}/blob/{ref}/{path:path}",
+    "/{namespace}/{repo_name}/blob/{ref}/{path:path}",
     response_class=HTMLResponse,
     response_model_exclude_none=True,
 )
-def render_content(repo_name: str, ref: str, path: str) -> HTMLResponse:
+def render_content(namespace: str, repo_name: str, ref: str, path: str) -> HTMLResponse:
     if not repo_name.endswith(".git"):
         repo_name = f"{repo_name}.git"
-    repo_path = pathlib.Path(GIT_PROJECT_ROOT, repo_name)
+    repo_path = pathlib.Path(GIT_PROJECT_ROOT, namespace, repo_name)
 
     cmd = [
         "git",
@@ -98,7 +98,7 @@ async def init_aiohttp_app():
     asgi_resource = ASGIResource(fastapi_app)
 
     # Register routes
-    aiohttp_app.router.add_route("*", "/{repo}.git/{path:.*}", handle_git_backend_request)
+    aiohttp_app.router.add_route("*", "/{namespace}/{repo}.git/{path:.*}", handle_git_backend_request)
 
     # Register resource
     aiohttp_app.router.register_resource(asgi_resource)
@@ -109,17 +109,8 @@ async def init_aiohttp_app():
     return aiohttp_app
 
 def main() -> None:
-    # Ensure there is a bare Git repository for testing
-    test_repo_path = os.path.join(GIT_PROJECT_ROOT, "my-repo.git")
-
     loop = asyncio.get_event_loop()
     aiohttp_app = loop.run_until_complete(init_aiohttp_app())
-
-    if not os.path.exists(test_repo_path):
-        os.makedirs(GIT_PROJECT_ROOT, exist_ok=True)
-        os.system(f"git init --bare {test_repo_path}")
-        os.system(f"rm -rf {test_repo_path}/hooks/")
-        print(f"Initialized bare repository at {test_repo_path}")
 
     # Start the server
     web.run_app(aiohttp_app, host="0.0.0.0", port=8080)
