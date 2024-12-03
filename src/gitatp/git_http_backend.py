@@ -162,55 +162,60 @@ if atproto_index.root is None:
 atproto_index.post = atproto_index.root
 atproto_index.parent = atproto_index.root
 
-def atproto_index_read(client, index, depth: int = 100):
+# TODO Add ctx with policy object and grab owners from atprotobin style manifest
+def atproto_index_read_recurse(client, index, index_entry, top: bool = True):
+    owner_dids = [index.owner_profile.did]
+    if index_entry.post.author.did not in owner_dids:
+        return
+    # pprint.pprint(json.loads(index_entry.model_dump_json()))
+    index_kwargs = {}
+    if (
+        index_entry.post.record.embed
+        and index_entry.post.record.embed.images
+    ):
+        index_kwargs["blob"] = {
+            "hash_alg": index_entry.post.record.embed.images[0].alt.split(":", maxsplit=1)[0],
+            "hash_value": index_entry.post.record.embed.images[0].alt.split(":", maxsplit=1)[1],
+            "cid": index_entry.post.record.embed.images[0].image.ref.link,
+            "did": index_entry.post.author.did,
+        }
+    if index_entry.post.record.reply is not None:
+        index_kwargs["root"] = {
+            "uri": index_entry.post.record.reply.root.uri,
+            "cid": index_entry.post.record.reply.root.cid,
+        }
+        index_kwargs["parent"] = {
+            "uri": index_entry.post.record.reply.parent.uri,
+            "cid": index_entry.post.record.reply.parent.cid,
+        }
+    sub_index = index.__class__(
+        text=index_entry.post.record.text,
+        owner_profile=index.owner_profile,
+        post={
+            "uri": index_entry.post.uri,
+            "cid": index_entry.post.cid,
+        },
+        **index_kwargs,
+    )
+    if index_entry.replies is not None:
+        for reply_entry in index_entry.replies:
+            atproto_index_read_recurse(client, sub_index, reply_entry)
+    if index_entry.post.record.text in index.entries:
+        index.entries[index_entry.post.record.text].entries.update(
+            sub_index.entries,
+        )
+    else:
+        index.entries[index_entry.post.record.text] = sub_index
+
+# index_entry = client.get_posts([index.post.uri])
+def atproto_index_read(client, index, depth: int = None, top: bool = False):
     for index_type, index_entry in client.get_post_thread(
         index.post.uri,
         depth=depth,
     ):
-        snoop.pp(index_type, index_entry)
+        # snoop.pp(index_type, index_entry)
         if index_type == 'thread':
-            if index_entry.post.author.did == index.owner_profile.did:
-                # pprint.pprint(json.loads(index_entry.model_dump_json()))
-                if not index_entry.replies:
-                    continue
-                for reply_entry in index_entry.replies:
-                    if reply_entry.post.author.did == index.owner_profile.did:
-                        pprint.pprint(json.loads(reply_entry.model_dump_json()))
-                        index_kwargs = {}
-                        if (
-                            reply_entry.post.record.embed
-                            and reply_entry.post.record.embed.images
-                        ):
-                            index_kwargs["blob"] = {
-                                "hash_alg": reply_entry.post.record.embed.images[0].alt.split(":", maxsplit=1)[0],
-                                "hash_value": reply_entry.post.record.embed.images[0].alt.split(":", maxsplit=1)[1],
-                                "cid": reply_entry.post.record.embed.images[0].image.ref.link,
-                                "did": reply_entry.post.author.did,
-                            }
-                        sub_index = index.__class__(
-                            text=reply_entry.post.record.text,
-                            owner_profile=index.owner_profile,
-                            post={
-                                "uri": reply_entry.post.uri,
-                                "cid": reply_entry.post.cid,
-                            },
-                            root={
-                                "uri": reply_entry.post.record.reply.root.uri,
-                                "cid": reply_entry.post.record.reply.root.cid,
-                            },
-                            parent={
-                                "uri": reply_entry.post.record.reply.parent.uri,
-                                "cid": reply_entry.post.record.reply.parent.cid,
-                            },
-                            **index_kwargs,
-                        )
-                        atproto_index_read(client, sub_index, depth=depth)
-                        if reply_entry.post.record.text in index.entries:
-                            index.entries[reply_entry.post.record.text].entries.update(
-                                sub_index.entries,
-                            )
-                        else:
-                            index.entries[reply_entry.post.record.text] = sub_index
+            atproto_index_read_recurse(client, index, index_entry, top=top)
         elif index_type == 'threadgate':
             pass
         else:
@@ -275,11 +280,11 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
     return True
 
 if not int(os.environ.get("GITATP_NO_SYNC", "0")):
-    atproto_index_read(client, atproto_index)
+    atproto_index_read(client, atproto_index, depth=2, top=True)
 atproto_index_create(atproto_index, "vcs")
-atproto_index_create(atproto_index.entries["vcs"], "git")
+atproto_index_create(atproto_index.entries["index"].entries["vcs"], "git")
 if not int(os.environ.get("GITATP_NO_SYNC", "0")):
-    atproto_index_read(client, atproto_index.entries["vcs"].entries["git"])
+    atproto_index_read(client, atproto_index.entries["index"].entries["vcs"].entries["git"])
 
 # Configuration
 GIT_PROJECT_ROOT = args.repos_directory
@@ -290,7 +295,7 @@ os.makedirs(GIT_PROJECT_ROOT, exist_ok=True)
 
 @snoop
 def snoop_repos():
-    for repo_name in atproto_index.entries["vcs"].entries["git"].entries:
+    for repo_name in atproto_index.entries["index"].entries["vcs"].entries["git"].entries:
         snoop.pp(repo_name)
 
 snoop_repos()
@@ -382,7 +387,7 @@ def download_from_atproto_to_local_repos_directory_git(client, namespace, repo_n
             extract_zip_of_files(repo_path, zip_data, [index_entry.text])
             print(f"Successful download of internal file to {repo_name}: {repo_file_path}")
 
-for repo_name, repo_index in atproto_index.entries["vcs"].entries["git"].entries.items():
+for repo_name, repo_index in atproto_index.entries["index"].entries["vcs"].entries["git"].entries.items():
     download_from_atproto_to_local_repos_directory_git(client, atproto_handle, repo_name, repo_index)
 
 # Create a zip archive containing the internal files
@@ -514,7 +519,7 @@ async def handle_git_backend_request(request):
         # TODO Better way for transparent .git on local repo directories
         if repo_name.endswith(".git"):
             repo_name = repo_name[:-4]
-        atproto_index_create(atproto_index.entries["vcs"].entries["git"], repo_name)
+        atproto_index_create(atproto_index.entries["index"].entries["vcs"].entries["git"], repo_name)
         for internal_file in list_git_internal_files(local_repo_path):
             repo_file_path = str(internal_file.relative_to(local_repo_path))
 
@@ -535,7 +540,7 @@ async def handle_git_backend_request(request):
             hash_instance.update(internal_file.read_bytes())
             data_as_image_hash = hash_instance.hexdigest()
             if atproto_index_create(
-                atproto_index.entries["vcs"].entries["git"].entries[repo_name],
+                atproto_index.entries["index"].entries["vcs"].entries["git"].entries[repo_name],
                 repo_file_path,
                 data_as_image=png_zip_data,
                 data_as_image_hash=f"{hash_alg}:{data_as_image_hash}",
