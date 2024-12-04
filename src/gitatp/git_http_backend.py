@@ -182,6 +182,11 @@ atproto_index.parent = atproto_index.root
 
 # TODO Add ctx with policy object and grab owners from atprotobin style manifest
 def atproto_index_read_recurse(client, index, index_entry):
+    # TODO Support for pull requests. Maintiners MAY push to group repo.
+    # Maintainers and others SHOULD pull request group repo.
+    # TODO If there is a later reply in the thread with the same text and it's a
+    # file __getattr__() on the CacheATProtoIndex object should resolve down the
+    # chain using traverse_config_get(target, *args) unified config stuff.
     owner_dids = [index.owner_profile.did]
     if index_entry.replies is not None:
         for reply_entry in index_entry.replies:
@@ -239,6 +244,8 @@ def atproto_index_read(client, index, depth: int = None):
             warnings.warn(f"Unkown get_post_thread().index_type: {index_type!r}: {pprint.pformat(index_entry)}")
 
 def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, data_as_image_hash: str = None):
+    parent = models.create_strong_ref(index.post)
+    root = models.create_strong_ref(index.root)
     if index_entry_key in index.entries:
         if data_as_image_hash is None:
             # Index without data already exists, NOP
@@ -252,9 +259,8 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
             # Index entry with same data already exists, NOP
             return False, index.entries[index_entry_key]
         # Remove old version, fall through and create new version
-        client.delete_post(index.entries[index_entry_key].post.uri)
-    parent = models.create_strong_ref(index.post)
-    root = models.create_strong_ref(index.root)
+        # TODO Get thread if the would be parent post has any unloaded replies
+        parent = models.create_strong_ref(index.entries[index_entry_key].post)
     method = client.send_post
     kwargs = {}
     if data_as_image is not None:
@@ -415,6 +421,8 @@ def create_png_with_zip(zip_data):
 async def handle_git_backend_request(request):
     global hash_alg
 
+    # TODO OAuth -> Client SPA when on loopback, backend on relays
+
     namespace = request.match_info.get('namespace', '')
     atproto_cache.namespaces.setdefault(
         namespace,
@@ -454,7 +462,7 @@ async def handle_git_backend_request(request):
                     client,
                     namespace,
                     repo_name,
-                    atproto_index.entries["vcs"].entries["git"].entries[repo_name],
+                    atproto_index.entries["vcs"].entries["git"].entries[repo_name].entries[".git"],
                 )
 
     path_info = f"{repo_name}.git/{request.match_info.get('path', '')}"
@@ -549,7 +557,10 @@ async def handle_git_backend_request(request):
     print(f"path_info: {namespace}/{path_info}")
     if path_info.endswith("git-receive-pack"):
         # TODO Better way for transparent .git on local repo directories
+        # TODO Use atprotobin.zip_image on all non-binary files
         atproto_index_create(atproto_index.entries["vcs"].entries["git"], repo_name)
+        atproto_index_create(atproto_index.entries["vcs"].entries["git"].entries[repo_name], ".git")
+        atproto_index_create(atproto_index.entries["vcs"].entries["git"].entries[repo_name], "metadata")
         for internal_file in list_git_internal_files(local_repo_path):
             repo_file_path = str(internal_file.relative_to(local_repo_path))
 
@@ -570,7 +581,7 @@ async def handle_git_backend_request(request):
             hash_instance.update(internal_file.read_bytes())
             data_as_image_hash = hash_instance.hexdigest()
             created, cached = atproto_index_create(
-                atproto_index.entries["vcs"].entries["git"].entries[repo_name],
+                atproto_index.entries["vcs"].entries["git"].entries[repo_name].entries[".git"],
                 repo_file_path,
                 data_as_image=png_zip_data,
                 data_as_image_hash=f"{hash_alg}:{data_as_image_hash}",
