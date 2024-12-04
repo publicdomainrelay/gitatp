@@ -78,16 +78,34 @@ class CacheATProtoIndex(BaseModel):
         default_factory=lambda: {},
     )
 
-atproto_index = CacheATProtoIndex(text="index")
-atproto_index_path = Path("~", ".cache", "atproto_vcs_git_cache.json").expanduser()
-atproto_index_path.parent.mkdir(parents=True, exist_ok=True)
+class CacheATProtoNamespace(BaseModel):
+    owner_profile: Optional[models.app.bsky.actor.defs.ProfileViewBasic] = None
+    index: Optional[CacheATProtoIndex] = None
+
+class CacheATProtoNamespaces(BaseModel):
+    owner_profile: Optional[models.app.bsky.actor.defs.ProfileViewBasic] = None
+    namespaces: dict[str, CacheATProtoNamespace] = Field(
+        default_factory=lambda: {},
+    )
+
+atproto_cache = CacheATProtoNamespaces()
+atproto_cache_path = Path("~", ".cache", "atproto_vcs_git_cache.json").expanduser()
+atproto_cache_path.parent.mkdir(parents=True, exist_ok=True)
 atexit.register(
-    lambda: atproto_index_path.write_text(
-        atproto_index.model_dump_json(),
+    lambda: atproto_cache_path.write_text(
+        atproto_cache.model_dump_json(),
     )
 )
-if False and atproto_index_path.exists():
-    atproto_index = CacheATProtoIndex.model_validate_json(atproto_index_path.read_text())
+if False and atproto_cache_path.exists():
+    atproto_cache = CacheATProtoIndex.model_validate_json(atproto_cache_path.read_text())
+atproto_cache.namespaces.setdefault(
+    atproto_handle,
+    CacheATProtoNamespace(
+        index=CacheATProtoIndex(text="index"),
+    )
+)
+atproto_namespace = atproto_cache.namespaces[atproto_handle]
+atproto_index = atproto_namespace.index
 
 client = Client(
     base_url=atproto_base_url,
@@ -163,7 +181,7 @@ atproto_index.post = atproto_index.root
 atproto_index.parent = atproto_index.root
 
 # TODO Add ctx with policy object and grab owners from atprotobin style manifest
-def atproto_index_read_recurse(client, index, index_entry, top: bool = True):
+def atproto_index_read_recurse(client, index, index_entry):
     owner_dids = [index.owner_profile.did]
     if index_entry.replies is not None:
         for reply_entry in index_entry.replies:
@@ -207,14 +225,17 @@ def atproto_index_read_recurse(client, index, index_entry, top: bool = True):
                 index.entries[reply_entry.post.record.text] = sub_index
 
 # index_entry = client.get_posts([index.post.uri])
-def atproto_index_read(client, index, depth: int = None, top: bool = False):
+def atproto_index_read(client, index, depth: int = None):
+    if index.post is None:
+        snoop.pp(index)
+        sys.exit(0)
     for index_type, index_entry in client.get_post_thread(
         index.post.uri,
         depth=depth,
     ):
         # snoop.pp(index_type, index_entry)
         if index_type == 'thread':
-            atproto_index_read_recurse(client, index, index_entry, top=top)
+            atproto_index_read_recurse(client, index, index_entry)
         elif index_type == 'threadgate':
             pass
         else:
@@ -277,7 +298,7 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
     return True, index.entries[index_entry_key]
 
 if not int(os.environ.get("GITATP_NO_SYNC", "0")):
-    atproto_index_read(client, atproto_index, depth=2, top=True)
+    atproto_index_read(client, atproto_index, depth=2)
 atproto_index_create(atproto_index, "vcs")
 atproto_index_create(atproto_index.entries["vcs"], "git")
 
@@ -398,6 +419,20 @@ async def handle_git_backend_request(request):
     global hash_alg
 
     namespace = request.match_info.get('namespace', '')
+    atproto_cache.namespaces.setdefault(
+        namespace,
+        CacheATProtoNamespace(
+            index=CacheATProtoIndex(text="index"),
+        )
+    )
+    atproto_namespace = atproto_cache.namespaces[namespace]
+    atproto_index = atproto_namespace.index
+    if atproto_index.owner_profile is None:
+        atproto_index.owner_profile = client.get_profile(namespace)
+    atproto_index.root = atproto_index.owner_profile.pinned_post
+    atproto_index.post = atproto_index.root
+    atproto_index.parent = atproto_index.root
+
     repo_name = request.match_info.get('repo', '')
     if repo_name.endswith(".git"):
         repo_name = repo_name[:-4]
@@ -411,15 +446,19 @@ async def handle_git_backend_request(request):
 
     # Sync from ATProto
     if not int(os.environ.get("GITATP_NO_SYNC", "0")):
-        # TODO namespace download
-        atproto_index_read(client, atproto_index.entries["vcs"].entries["git"])
-        if repo_name in atproto_index.entries["vcs"].entries["git"].entries:
-            download_from_atproto_to_local_repos_directory_git(
-                client,
-                atproto_handle,
-                repo_name,
-                atproto_index.entries["vcs"].entries["git"].entries[repo_name],
-            )
+        atproto_index_read(client, atproto_index, depth=2)
+        if (
+            "vcs" in atproto_index.entries
+            and "git" in atproto_index.entries["vcs"].entries
+        ):
+            atproto_index_read(client, atproto_index.entries["vcs"].entries["git"])
+            if repo_name in atproto_index.entries["vcs"].entries["git"].entries:
+                download_from_atproto_to_local_repos_directory_git(
+                    client,
+                    namespace,
+                    repo_name,
+                    atproto_index.entries["vcs"].entries["git"].entries[repo_name],
+                )
 
     path_info = f"{repo_name}.git/{request.match_info.get('path', '')}"
     env = {
