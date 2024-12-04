@@ -21,7 +21,12 @@ You can view repo files at: http://localhost:8080/$USER.atproto-pds.fqdn.example
 
 ![Screenshot of web view of code](https://github.com/user-attachments/assets/b7387416-7981-4f2d-bf1c-f3ffe6095f05)
 
+- Features
+  - Push to ATProto threads of your own handle
+    - **TODO** Enable federation, aka push to others repos via: https://github.com/publicdomainrelay/reference-implementation/issues/8
+  - Pull from ATProto threads of any handle
 - References
   - https://github.com/publicdomainrelay/reference-implementation/issues/15
+  - https://github.com/publicdomainrelay/atprotobin
 
 [![asciicast](https://asciinema.org/a/692702.svg)](https://asciinema.org/a/692702)
