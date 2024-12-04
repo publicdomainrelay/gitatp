@@ -69,7 +69,7 @@ class CacheATProtoBlob(BaseModel):
 
 class CacheATProtoIndex(BaseModel):
     text: str
-    owner_profile: Optional[models.app.bsky.actor.defs.ProfileViewDetailed] = None
+    owner_profile: Optional[models.app.bsky.actor.defs.ProfileViewBasic] = None
     post: Optional[models.base.RecordModelBase] = None
     root: Optional[models.base.RecordModelBase] = None
     parent: Optional[models.base.RecordModelBase] = None
@@ -165,47 +165,46 @@ atproto_index.parent = atproto_index.root
 # TODO Add ctx with policy object and grab owners from atprotobin style manifest
 def atproto_index_read_recurse(client, index, index_entry, top: bool = True):
     owner_dids = [index.owner_profile.did]
-    if index_entry.post.author.did not in owner_dids:
-        return
-    # pprint.pprint(json.loads(index_entry.model_dump_json()))
-    index_kwargs = {}
-    if (
-        index_entry.post.record.embed
-        and index_entry.post.record.embed.images
-    ):
-        index_kwargs["blob"] = {
-            "hash_alg": index_entry.post.record.embed.images[0].alt.split(":", maxsplit=1)[0],
-            "hash_value": index_entry.post.record.embed.images[0].alt.split(":", maxsplit=1)[1],
-            "cid": index_entry.post.record.embed.images[0].image.ref.link,
-            "did": index_entry.post.author.did,
-        }
-    if index_entry.post.record.reply is not None:
-        index_kwargs["root"] = {
-            "uri": index_entry.post.record.reply.root.uri,
-            "cid": index_entry.post.record.reply.root.cid,
-        }
-        index_kwargs["parent"] = {
-            "uri": index_entry.post.record.reply.parent.uri,
-            "cid": index_entry.post.record.reply.parent.cid,
-        }
-    sub_index = index.__class__(
-        text=index_entry.post.record.text,
-        owner_profile=index.owner_profile,
-        post={
-            "uri": index_entry.post.uri,
-            "cid": index_entry.post.cid,
-        },
-        **index_kwargs,
-    )
     if index_entry.replies is not None:
         for reply_entry in index_entry.replies:
+            if reply_entry.post.author.did not in owner_dids:
+                return
+            # pprint.pprint(json.loads(index_entry.model_dump_json()))
+            sub_index_kwargs = {}
+            if (
+                reply_entry.post.record.embed
+                and reply_entry.post.record.embed.images
+            ):
+                sub_index_kwargs["blob"] = {
+                    "hash_alg": reply_entry.post.record.embed.images[0].alt.split(":", maxsplit=1)[0],
+                    "hash_value": reply_entry.post.record.embed.images[0].alt.split(":", maxsplit=1)[1],
+                    "cid": reply_entry.post.record.embed.images[0].image.ref.link,
+                    "did": reply_entry.post.author.did,
+                }
+            sub_index_kwargs["root"] = {
+                "uri": reply_entry.post.record.reply.root.uri,
+                "cid": reply_entry.post.record.reply.root.cid,
+            }
+            sub_index_kwargs["parent"] = {
+                "uri": reply_entry.post.record.reply.parent.uri,
+                "cid": reply_entry.post.record.reply.parent.cid,
+            }
+            sub_index = index.__class__(
+                text=reply_entry.post.record.text,
+                owner_profile=reply_entry.post.author,
+                post={
+                    "uri": reply_entry.post.uri,
+                    "cid": reply_entry.post.cid,
+                },
+                **sub_index_kwargs,
+            )
             atproto_index_read_recurse(client, sub_index, reply_entry)
-    if index_entry.post.record.text in index.entries:
-        index.entries[index_entry.post.record.text].entries.update(
-            sub_index.entries,
-        )
-    else:
-        index.entries[index_entry.post.record.text] = sub_index
+            if index_entry.post.record.text in index.entries:
+                index.entries[reply_entry.post.record.text].entries.update(
+                    sub_index.entries,
+                )
+            else:
+                index.entries[reply_entry.post.record.text] = sub_index
 
 # index_entry = client.get_posts([index.post.uri])
 def atproto_index_read(client, index, depth: int = None, top: bool = False):
@@ -223,21 +222,19 @@ def atproto_index_read(client, index, depth: int = None, top: bool = False):
 
 def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, data_as_image_hash: str = None):
     if index_entry_key in index.entries:
-        if data_as_image_hash is not None:
-            hash_alg = data_as_image_hash.split(":", maxsplit=1)[0]
-            hash_value = data_as_image_hash.split(":", maxsplit=1)[1]
-            # Remove old version, fall through to create new version
-            if (
-                hash_alg == index.entries[index_entry_key].blob.hash_alg
-                and hash_value == index.entries[index_entry_key].blob.hash_value
-            ):
-                # Index entry with same data already exists, NOP
-                return False
-            else:
-                client.delete_post(index.entries[index_entry_key].post.uri)
-        else:
+        if data_as_image_hash is None:
             # Index without data already exists, NOP
-            return False
+            return False, index.entries[index_entry_key]
+        hash_alg = data_as_image_hash.split(":", maxsplit=1)[0]
+        hash_value = data_as_image_hash.split(":", maxsplit=1)[1]
+        if (
+            hash_alg == index.entries[index_entry_key].blob.hash_alg
+            and hash_value == index.entries[index_entry_key].blob.hash_value
+        ):
+            # Index entry with same data already exists, NOP
+            return False, index.entries[index_entry_key]
+        # Remove old version, fall through and create new version
+        client.delete_post(index.entries[index_entry_key].post.uri)
     parent = models.create_strong_ref(index.post)
     root = models.create_strong_ref(index.root)
     method = client.send_post
@@ -277,14 +274,12 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
         },
         **index_kwargs,
     )
-    return True
+    return True, index.entries[index_entry_key]
 
 if not int(os.environ.get("GITATP_NO_SYNC", "0")):
     atproto_index_read(client, atproto_index, depth=2, top=True)
 atproto_index_create(atproto_index, "vcs")
-atproto_index_create(atproto_index.entries["index"].entries["vcs"], "git")
-if not int(os.environ.get("GITATP_NO_SYNC", "0")):
-    atproto_index_read(client, atproto_index.entries["index"].entries["vcs"].entries["git"])
+atproto_index_create(atproto_index.entries["vcs"], "git")
 
 # Configuration
 GIT_PROJECT_ROOT = args.repos_directory
@@ -292,13 +287,6 @@ GIT_HTTP_EXPORT_ALL = "1"
 
 # Ensure the project root exists
 os.makedirs(GIT_PROJECT_ROOT, exist_ok=True)
-
-@snoop
-def snoop_repos():
-    for repo_name in atproto_index.entries["index"].entries["vcs"].entries["git"].entries:
-        snoop.pp(repo_name)
-
-snoop_repos()
 
 # Utility to list all internal files in a Git repository
 def list_git_internal_files(repo_path):
@@ -355,8 +343,8 @@ def download_from_atproto_to_local_repos_directory_git(client, namespace, repo_n
         repo_name = f"{repo_name}.git"
     repo_path = Path(GIT_PROJECT_ROOT, namespace, repo_name)
     for index_entry_key, index_entry in index.entries.items():
-        if not index_entry.blob and not index_entry.blob.cid:
-            warnings.warn(f"{index.blob.hash_alg!r} is not a file, offending index node: {pprint.pprint(json.loads(index.model_dump_json()))}")
+        if not index_entry.blob or not index_entry.blob.cid:
+            warnings.warn(f"{index.text!r} is not a file, offending index node: {pprint.pprint(json.loads(index.model_dump_json()))}")
         # TODO Probably should look at path traversal
         internal_file = repo_path.joinpath(index_entry.text)
         repo_file_path = str(internal_file.relative_to(repo_path))
@@ -387,9 +375,6 @@ def download_from_atproto_to_local_repos_directory_git(client, namespace, repo_n
             extract_zip_of_files(repo_path, zip_data, [index_entry.text])
             print(f"Successful download of internal file to {repo_name}: {repo_file_path}")
 
-for repo_name, repo_index in atproto_index.entries["index"].entries["vcs"].entries["git"].entries.items():
-    download_from_atproto_to_local_repos_directory_git(client, atproto_handle, repo_name, repo_index)
-
 # Create a zip archive containing the internal files
 def create_zip_of_files(repo_path, files):
     zip_buffer = BytesIO()
@@ -414,18 +399,29 @@ async def handle_git_backend_request(request):
 
     namespace = request.match_info.get('namespace', '')
     repo_name = request.match_info.get('repo', '')
-    if not repo_name.endswith(".git"):
-        repo_name = f"{repo_name}.git"
+    if repo_name.endswith(".git"):
+        repo_name = repo_name[:-4]
 
     # Ensure there is a bare Git repository for testing
-    local_repo_path = Path(GIT_PROJECT_ROOT, namespace, repo_name)
+    local_repo_path = Path(GIT_PROJECT_ROOT, namespace, f"{repo_name}.git")
     if not local_repo_path.is_dir():
         local_repo_path.parent.mkdir(parents=True, exist_ok=True)
         os.system(f"git init --bare {local_repo_path}")
         os.system(f"rm -rf {local_repo_path}/hooks/")
-        print(f"Initialized bare repository at {local_repo_path}")
 
-    path_info = f"{repo_name}/{request.match_info.get('path', '')}"
+    # Sync from ATProto
+    if not int(os.environ.get("GITATP_NO_SYNC", "0")):
+        # TODO namespace download
+        atproto_index_read(client, atproto_index.entries["vcs"].entries["git"])
+        if repo_name in atproto_index.entries["vcs"].entries["git"].entries:
+            download_from_atproto_to_local_repos_directory_git(
+                client,
+                atproto_handle,
+                repo_name,
+                atproto_index.entries["vcs"].entries["git"].entries[repo_name],
+            )
+
+    path_info = f"{repo_name}.git/{request.match_info.get('path', '')}"
     env = {
         "GIT_PROJECT_ROOT": str(local_repo_path.parent),
         "GIT_HTTP_EXPORT_ALL": GIT_HTTP_EXPORT_ALL,
@@ -517,9 +513,7 @@ async def handle_git_backend_request(request):
     print(f"path_info: {namespace}/{path_info}")
     if path_info.endswith("git-receive-pack"):
         # TODO Better way for transparent .git on local repo directories
-        if repo_name.endswith(".git"):
-            repo_name = repo_name[:-4]
-        atproto_index_create(atproto_index.entries["index"].entries["vcs"].entries["git"], repo_name)
+        atproto_index_create(atproto_index.entries["vcs"].entries["git"], repo_name)
         for internal_file in list_git_internal_files(local_repo_path):
             repo_file_path = str(internal_file.relative_to(local_repo_path))
 
@@ -539,12 +533,13 @@ async def handle_git_backend_request(request):
             hash_instance = hashlib.new(hash_alg)
             hash_instance.update(internal_file.read_bytes())
             data_as_image_hash = hash_instance.hexdigest()
-            if atproto_index_create(
-                atproto_index.entries["index"].entries["vcs"].entries["git"].entries[repo_name],
+            created, cached = atproto_index_create(
+                atproto_index.entries["vcs"].entries["git"].entries[repo_name],
                 repo_file_path,
                 data_as_image=png_zip_data,
                 data_as_image_hash=f"{hash_alg}:{data_as_image_hash}",
-            ):
+            )
+            if created:
                 print(f"Updated internal file in {repo_name}: {repo_file_path}")
 
     return response
