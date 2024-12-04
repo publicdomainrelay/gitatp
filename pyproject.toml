@@ -19,6 +19,7 @@ dependencies = [
     "fastui>=0.7.0",
     "aiohttp-asgi>=0.5.2",
     "python-magic>=0.4.27",
+    "atprotobin>=1.1.1",
 ]
 
 [project.urls]

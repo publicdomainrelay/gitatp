@@ -7,7 +7,9 @@ import base64
 import shutil
 import pprint
 import warnings
+import contextlib
 from aiohttp import web
+import pathlib
 from pathlib import Path
 from io import BytesIO
 from typing import Optional
@@ -20,6 +22,7 @@ import argparse
 from pydantic import BaseModel, Field
 from atproto import Client, models
 import keyring
+import atprotobin.zip_image
 import snoop
 
 # Helper scripts for APIs not available to Python client, etc.
@@ -243,7 +246,33 @@ def atproto_index_read(client, index, depth: int = None):
         else:
             warnings.warn(f"Unkown get_post_thread().index_type: {index_type!r}: {pprint.pformat(index_entry)}")
 
-def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, data_as_image_hash: str = None):
+class FileContentsToEncode(BaseModel):
+    name: str
+    data: bytes
+
+class FilePathToEncode(BaseModel):
+    repo_path: pathlib.Path
+    local_path: pathlib.Path
+
+def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, data_as_image_hash: str = None, encode_contents: FileContentsToEncode = None, encode_path: FilePathToEncode = None):
+    global hash_alg
+
+    hash_instance = hashlib.new(hash_alg)
+    if encode_contents is not None:
+        hash_instance.update(encode_contents.data)
+        data_as_image = atprotobin.zip_image.encode(
+            upload_file.contents, upload_file.name,
+        )
+    if encode_contents is not None:
+        hash_instance.update(encode_path.local_path.read_bytes())
+        data_as_image = create_png_with_zip(
+            create_zip_of_files(
+                encode_path.repo_path, [encode_path.local_path],
+            )
+        )
+    if data_as_image is not None:
+        data_as_image_hash = f"{hash_alg}:{hash_instance.hexdigest()}"
+
     parent = models.create_strong_ref(index.post)
     root = models.create_strong_ref(index.root)
     if index_entry_key in index.entries:
@@ -258,7 +287,7 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
         ):
             # Index entry with same data already exists, NOP
             return False, index.entries[index_entry_key]
-        # Remove old version, fall through and create new version
+        # Fall through and create new version with ref to old as parent
         # TODO Get thread if the would be parent post has any unloaded replies
         parent = models.create_strong_ref(index.entries[index_entry_key].post)
     method = client.send_post
@@ -274,7 +303,7 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
         **kwargs,
     )
     index_kwargs = {}
-    if data_as_image_hash is not None:
+    if data_as_image is not None:
         index_kwargs["blob"] = {
             "hash_alg": data_as_image_hash.split(":", maxsplit=1)[0],
             "hash_value": data_as_image_hash.split(":", maxsplit=1)[1],
@@ -376,6 +405,8 @@ def download_from_atproto_to_local_repos_directory_git(client, namespace, repo_n
         if not internal_file.exists():
             re_download = True
         else:
+            if not index_entry.blob:
+                snoop.pp(index_entry)
             if index_entry.blob.hash_alg not in allowed_hash_algs:
                 raise ValueError(f"{index_entry.blob.hash_alg!r} is not in allowed_hash_algs, offending index node: {pprint.pprint(json.loads(index_entry.model_dump_json()))}")
             hash_instance = hashlib.new(index_entry.blob.hash_alg)
@@ -419,8 +450,6 @@ def create_png_with_zip(zip_data):
 
 # Handle Git HTTP Backend requests
 async def handle_git_backend_request(request):
-    global hash_alg
-
     # TODO OAuth -> Client SPA when on loopback, backend on relays
 
     namespace = request.match_info.get('namespace', '')
@@ -563,31 +592,56 @@ async def handle_git_backend_request(request):
         atproto_index_create(atproto_index.entries["vcs"].entries["git"].entries[repo_name], "metadata")
         for internal_file in list_git_internal_files(local_repo_path):
             repo_file_path = str(internal_file.relative_to(local_repo_path))
-
-            # Create zip archive of internal files
-            zip_data = create_zip_of_files(local_repo_path, [internal_file])
-
-            # Create PNG with embedded zip
-            png_zip_data = create_png_with_zip(zip_data)
-
-            # Base64 encode the PNG data
-            # encoded_data = base64.b64encode(png_zip_data).decode('utf-8')
-
-            # Output the data URL
-            # data_url = f"data:image/png;base64,{encoded_data}"
-            # print(data_url)
-            # atproto_index_create(atproto_index.entries["vcs"]["git"], data_url)
-            hash_instance = hashlib.new(hash_alg)
-            hash_instance.update(internal_file.read_bytes())
-            data_as_image_hash = hash_instance.hexdigest()
             created, cached = atproto_index_create(
                 atproto_index.entries["vcs"].entries["git"].entries[repo_name].entries[".git"],
                 repo_file_path,
-                data_as_image=png_zip_data,
-                data_as_image_hash=f"{hash_alg}:{data_as_image_hash}",
+                encode_path=FilePathToEncode(
+                    repo_path=local_repo_path,
+                    local_path=internal_file,
+                ),
             )
             if created:
                 print(f"Updated internal file in {repo_name}: {repo_file_path}")
+
+        # Update each branches manifest if needed
+        cmd = [
+            "git",
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads/",
+        ]
+        branches_bytes = subprocess.check_output(
+            cmd,
+            cwd=str(local_repo_path.resolve()),
+        )
+        for branch_name in branches_bytes.decode().split("\n"):
+            branch_name = branch_name.replace("'", "").strip()
+            if not branch_name:
+                continue
+            # TODO Validate this
+            cmd = [
+                "git",
+                "show",
+                f"{branch_name}:.tools/open-architecture/governance/branches/{branch_name}/policies/upstream.yml",
+            ]
+            try:
+                manifest_contents_bytes = subprocess.check_output(
+                    cmd,
+                    cwd=str(local_repo_path.resolve()),
+                )
+
+                created, cached = atproto_index_create(
+                    atproto_index.entries["vcs"].entries["git"].entries[repo_name].entries["metadata"],
+                    f".tools/open-architecture/governance/branches/{branch_name}/policies/upstream.yml",
+                    encode_contents=FileContentsToEncode(
+                        name=f".tools/open-architecture/governance/branches/{branch_name}/policies/upstream.yml",
+                        data=manifest_contents_bytes,
+                    ),
+                )
+                if created:
+                    print(f"Updated metadata file in {repo_name}: .tools/open-architecture/governance/branches/{branch_name}/policies/upstream.yml")
+            except subprocess.CalledProcessError as e:
+                snoop.pp(e)
 
     return response
 
