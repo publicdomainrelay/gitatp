@@ -226,9 +226,6 @@ def atproto_index_read_recurse(client, index, index_entry):
 
 # index_entry = client.get_posts([index.post.uri])
 def atproto_index_read(client, index, depth: int = None):
-    if index.post is None:
-        snoop.pp(index)
-        sys.exit(0)
     for index_type, index_entry in client.get_post_thread(
         index.post.uri,
         depth=depth,
