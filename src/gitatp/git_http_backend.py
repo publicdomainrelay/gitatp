@@ -263,7 +263,7 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
         data_as_image = atprotobin.zip_image.encode(
             upload_file.contents, upload_file.name,
         )
-    if encode_contents is not None:
+    if encode_path is not None:
         hash_instance.update(encode_path.local_path.read_bytes())
         data_as_image = create_png_with_zip(
             create_zip_of_files(
@@ -487,12 +487,17 @@ async def handle_git_backend_request(request):
         ):
             atproto_index_read(client, atproto_index.entries["vcs"].entries["git"])
             if repo_name in atproto_index.entries["vcs"].entries["git"].entries:
-                download_from_atproto_to_local_repos_directory_git(
-                    client,
-                    namespace,
-                    repo_name,
-                    atproto_index.entries["vcs"].entries["git"].entries[repo_name].entries[".git"],
-                )
+                atproto_repo = atproto_index.entries["vcs"].entries["git"].entries[repo_name]
+                if (
+                    ".git" in atproto_repo.entries
+                    and "metadata" in atproto_repo.entries
+                ):
+                    download_from_atproto_to_local_repos_directory_git(
+                        client,
+                        namespace,
+                        repo_name,
+                        atproto_repo.entries[".git"],
+                    )
 
     path_info = f"{repo_name}.git/{request.match_info.get('path', '')}"
     env = {
@@ -627,6 +632,7 @@ async def handle_git_backend_request(request):
             try:
                 manifest_contents_bytes = subprocess.check_output(
                     cmd,
+                    stderr=subprocess.PIPE,
                     cwd=str(local_repo_path.resolve()),
                 )
 
@@ -641,7 +647,8 @@ async def handle_git_backend_request(request):
                 if created:
                     print(f"Updated metadata file in {repo_name}: .tools/open-architecture/governance/branches/{branch_name}/policies/upstream.yml")
             except subprocess.CalledProcessError as e:
-                snoop.pp(e)
+                if b"does not edist in" not in e.stderr:
+                    raise
 
     return response
 
