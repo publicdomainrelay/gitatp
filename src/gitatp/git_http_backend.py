@@ -260,8 +260,8 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
     hash_instance = hashlib.new(hash_alg)
     if encode_contents is not None:
         hash_instance.update(encode_contents.data)
-        data_as_image = atprotobin.zip_image.encode(
-            upload_file.contents, upload_file.name,
+        _mimetype, data_as_image = atprotobin.zip_image.encode(
+            encode_contents.data, encode_contents.name,
         )
     if encode_path is not None:
         hash_instance.update(encode_path.local_path.read_bytes())
@@ -624,6 +624,8 @@ async def handle_git_backend_request(request):
             if not branch_name:
                 continue
             # TODO Validate this
+            if branch_name.startswith("refs/heads/"):
+                branch_name = branch_name[len("refs/heads/"):]
             cmd = [
                 "git",
                 "show",
@@ -648,6 +650,7 @@ async def handle_git_backend_request(request):
                     print(f"Updated metadata file in {repo_name}: .tools/open-architecture/governance/branches/{branch_name}/policies/upstream.yml")
             except subprocess.CalledProcessError as e:
                 if b"does not edist in" not in e.stderr:
+                    snoop.pp(e, e.stderr)
                     raise
 
     return response
