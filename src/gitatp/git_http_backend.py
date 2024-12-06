@@ -649,7 +649,7 @@ async def handle_git_backend_request(request):
                 if created:
                     print(f"Updated metadata file in {repo_name}: .tools/open-architecture/governance/branches/{branch_name}/policies/upstream.yml")
             except subprocess.CalledProcessError as e:
-                if b"does not edist in" not in e.stderr:
+                if b"does not exist in" not in e.stderr:
                     snoop.pp(e, e.stderr)
                     raise
 
