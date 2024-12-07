@@ -7,6 +7,7 @@ import base64
 import shutil
 import pprint
 import warnings
+import traceback
 import contextlib
 from aiohttp import web
 import pathlib
@@ -19,7 +20,7 @@ import configparser
 import subprocess
 import argparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, AliasChoices
 from atproto import Client, models
 import keyring
 import atprotobin.zip_image
@@ -448,6 +449,41 @@ def create_png_with_zip(zip_data):
     png_zip_data = PNG_HEADER + zip_data
     return png_zip_data
 
+class PushOptions(BaseModel):
+    pr_branch: str = Field(
+        validation_alias=AliasChoices('pr.branch'),
+        default=None,
+    )
+    pr_ns: str = Field(
+        validation_alias=AliasChoices('pr.ns'),
+        default=None,
+    )
+
+def parse_push_options(chunk: bytes):
+    push_options = {}
+    if b"agent=" in chunk and b"0000PACK" in chunk:
+        chunk_header = chunk[
+            :chunk.index(b"0000PACK")
+        ]
+        chunk_header = chunk_header[
+            chunk_header.index(b"\x00"):
+        ]
+        if b"0000" in chunk_header:
+            chunk_header = chunk_header[
+                chunk_header.index(b"0000") + 4:
+            ]
+            chunk_header = chunk_header.decode(
+                "latin1", errors="ignore",
+            )
+            while chunk_header:
+                chunk_header_size = int(chunk_header[:4], 16)
+                chunk_header_value = chunk_header[4:chunk_header_size]
+                chunk_header = chunk_header[chunk_header_size:]
+                if "=" in chunk_header_value:
+                    key, value = chunk_header_value.split("=")
+                    push_options[key] = value
+    return push_options
+
 # Handle Git HTTP Backend requests
 async def handle_git_backend_request(request):
     # TODO OAuth -> Client SPA when on loopback, backend on relays
@@ -499,7 +535,13 @@ async def handle_git_backend_request(request):
                         atproto_repo.entries[".git"],
                     )
 
+    subprocess.run(
+        ["git", "config", "receive.advertisePushOptions", "true"],
+        cwd=str(local_repo_path),
+    )
+
     path_info = f"{repo_name}.git/{request.match_info.get('path', '')}"
+    print(f"path_info: {namespace}/{path_info}")
     env = {
         "GIT_PROJECT_ROOT": str(local_repo_path.parent),
         "GIT_HTTP_EXPORT_ALL": GIT_HTTP_EXPORT_ALL,
@@ -526,14 +568,18 @@ async def handle_git_backend_request(request):
         stderr=sys.stderr,  # Output stderr to the server's stderr
     )
 
-    # Forward the request body to git http-backend
+    # Push options are parsed from git client upload pack
+    push_options = {}
+
     async def write_to_git(stdin):
+        nonlocal push_options
         try:
             async for chunk in request.content.iter_chunked(4096):
+                push_options.update(parse_push_options(chunk))
                 stdin.write(chunk)
             await stdin.drain()
         except Exception as e:
-            print(f"Error writing to git http-backend: {e}", file=sys.stderr)
+            print(f"Error writing to git http-backend: {traceback.format_exc()}", file=sys.stderr)
         finally:
             if not stdin.is_closing():
                 stdin.close()
@@ -586,6 +632,8 @@ async def handle_git_backend_request(request):
 
     # Wait for the subprocess to finish
     await proc.wait()
+
+    push_options = PushOptions(**push_options)
 
     # Handle push events (git-receive-pack)
     print(f"path_info: {namespace}/{path_info}")

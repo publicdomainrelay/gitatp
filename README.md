@@ -15,6 +15,9 @@ python -m gitatp --repos-directory $HOME/.local/$USER-gitatp-repos
 
 rm -rf my-repo/ && git clone http://localhost:8080/$USER.atproto-pds.fqdn.example.com/my-repo.git && cd my-repo
 echo 2222 >> README.md && git add README.md && git commit -sm README.md && git push
+
+# Create Pull Request
+git push -o pr.ns=alice.atproto-pds.fqdn.example.com -o pr.branch=main
 ```
 
 You can view repo files at: http://localhost:8080/$USER.atproto-pds.fqdn.example.com/my-repo/blob/HEAD/README.md
