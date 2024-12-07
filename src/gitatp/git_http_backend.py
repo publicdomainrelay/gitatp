@@ -114,14 +114,15 @@ atproto_index = atproto_namespace.index
 client = Client(
     base_url=atproto_base_url,
 )
-client.login(
-    atproto_handle,
-    atproto_password,
-)
+if not int(os.environ.get("GITATP_NO_SYNC", "0")):
+    client.login(
+        atproto_handle,
+        atproto_password,
+    )
 
-if atproto_index.owner_profile is None:
-    atproto_index.owner_profile = client.get_profile(atproto_handle)
-atproto_index.root = atproto_index.owner_profile.pinned_post
+    if atproto_index.owner_profile is None:
+        atproto_index.owner_profile = client.get_profile(atproto_handle)
+    atproto_index.root = atproto_index.owner_profile.pinned_post
 
 def update_profile(client, pinned_post):
     # TODO Use Python client APIs once available
@@ -175,10 +176,11 @@ def update_profile(client, pinned_post):
     proc_result.check_returncode()
 
 # NOTE If you delete the index without unpinning first everything breaks
-if atproto_index.root is None:
-    post = client.send_post(text="index")
-    update_profile(client, pinned_post=post)
-    atproto_index.root = post
+if not int(os.environ.get("GITATP_NO_SYNC", "0")):
+    if atproto_index.root is None:
+        post = client.send_post(text="index")
+        update_profile(client, pinned_post=post)
+        atproto_index.root = post
 
 # For top level index all props are the same
 atproto_index.post = atproto_index.root
@@ -256,6 +258,9 @@ class FilePathToEncode(BaseModel):
     local_path: pathlib.Path
 
 def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, data_as_image_hash: str = None, encode_contents: FileContentsToEncode = None, encode_path: FilePathToEncode = None):
+    if int(os.environ.get("GITATP_NO_SYNC", "0")):
+        return
+
     global hash_alg
 
     hash_instance = hashlib.new(hash_alg)
@@ -332,8 +337,8 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
 
 if not int(os.environ.get("GITATP_NO_SYNC", "0")):
     atproto_index_read(client, atproto_index, depth=2)
-atproto_index_create(atproto_index, "vcs")
-atproto_index_create(atproto_index.entries["vcs"], "git")
+    atproto_index_create(atproto_index, "vcs")
+    atproto_index_create(atproto_index.entries["vcs"], "git")
 
 # Configuration
 GIT_PROJECT_ROOT = args.repos_directory
@@ -497,9 +502,10 @@ async def handle_git_backend_request(request):
     )
     atproto_namespace = atproto_cache.namespaces[namespace]
     atproto_index = atproto_namespace.index
-    if atproto_index.owner_profile is None:
-        atproto_index.owner_profile = client.get_profile(namespace)
-    atproto_index.root = atproto_index.owner_profile.pinned_post
+    if not int(os.environ.get("GITATP_NO_SYNC", "0")):
+        if atproto_index.owner_profile is None:
+            atproto_index.owner_profile = client.get_profile(namespace)
+        atproto_index.root = atproto_index.owner_profile.pinned_post
     atproto_index.post = atproto_index.root
     atproto_index.parent = atproto_index.root
 
@@ -636,8 +642,10 @@ async def handle_git_backend_request(request):
     push_options = PushOptions(**push_options)
 
     # Handle push events (git-receive-pack)
-    print(f"path_info: {namespace}/{path_info}")
-    if path_info.endswith("git-receive-pack"):
+    if (
+        path_info.endswith("git-receive-pack")
+        and not int(os.environ.get("GITATP_NO_SYNC", "0"))
+    ):
         # TODO Better way for transparent .git on local repo directories
         # TODO Use atprotobin.zip_image on all non-binary files
         atproto_index_create(atproto_index.entries["vcs"].entries["git"], repo_name)
