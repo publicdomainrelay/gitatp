@@ -455,12 +455,17 @@ def create_png_with_zip(zip_data):
     return png_zip_data
 
 class PushOptions(BaseModel):
+    branch: str = None
     pr_branch: str = Field(
         validation_alias=AliasChoices('pr.branch'),
         default=None,
     )
     pr_ns: str = Field(
         validation_alias=AliasChoices('pr.ns'),
+        default=None,
+    )
+    pr_repo: str = Field(
+        validation_alias=AliasChoices('pr.repo'),
         default=None,
     )
 
@@ -470,6 +475,12 @@ def parse_push_options(chunk: bytes):
         chunk_header = chunk[
             :chunk.index(b"0000PACK")
         ]
+        push_data = chunk_header[
+            :chunk_header.index(b"\x00")
+        ].decode(
+            "latin1", errors="ignore",
+        )
+        push_options["branch"] = push_data.split()[-1]
         chunk_header = chunk_header[
             chunk_header.index(b"\x00"):
         ]
@@ -651,6 +662,7 @@ async def handle_git_backend_request(request):
         atproto_index_create(atproto_index.entries["vcs"].entries["git"], repo_name)
         atproto_index_create(atproto_index.entries["vcs"].entries["git"].entries[repo_name], ".git")
         atproto_index_create(atproto_index.entries["vcs"].entries["git"].entries[repo_name], "metadata")
+        atproto_index_create(atproto_index.entries["vcs"].entries["git"].entries[repo_name], "pull_requests")
         for internal_file in list_git_internal_files(local_repo_path):
             repo_file_path = str(internal_file.relative_to(local_repo_path))
             created, cached = atproto_index_create(
@@ -708,6 +720,58 @@ async def handle_git_backend_request(request):
                 if b"does not exist in" not in e.stderr:
                     snoop.pp(e, e.stderr)
                     raise
+
+        # Pull requests
+        our_atproto_index = atproto_index
+        if (
+            push_options.pr_ns
+            and push_options.pr_repo
+            and push_options.pr_branch
+        ):
+            # Post reply of base branch to target branch to pull_requests
+            namespace = push_options.pr_ns
+            atproto_cache.namespaces.setdefault(
+                namespace,
+                CacheATProtoNamespace(
+                    index=CacheATProtoIndex(text="index"),
+                )
+            )
+            atproto_namespace = atproto_cache.namespaces[namespace]
+            atproto_index = atproto_namespace.index
+            if atproto_index.owner_profile is None:
+                atproto_index.owner_profile = client.get_profile(namespace)
+            atproto_index.root = atproto_index.owner_profile.pinned_post
+            atproto_index.post = atproto_index.root
+            atproto_index.parent = atproto_index.root
+
+            atproto_index_read(client, atproto_index, depth=2)
+
+            if (
+                "vcs" in atproto_index.entries
+                and "git" in atproto_index.entries["vcs"].entries
+            ):
+                atproto_index_read(client, atproto_index.entries["vcs"].entries["git"], depth=2)
+                if (
+                    push_options.pr_repo in atproto_index.entries["vcs"].entries["git"].entries
+                    and "pull_requests" in atproto_index.entries["vcs"].entries["git"].entries[push_options.pr_repo].entries
+                ):
+                    pull_request = {
+                        "base": push_options.pr_branch,
+                        "target": push_options.branch,
+                        "repo": {
+                            "protocol": "publicdomainrelay/index-atproto-v2@v1",
+                            "data": {
+                                "uri": our_atproto_index.entries["vcs"].entries["git"].entries[repo_name].post.uri,
+                                "cid": our_atproto_index.entries["vcs"].entries["git"].entries[repo_name].post.cid,
+                            },
+                        },
+                    }
+                    created, cached = atproto_index_create(
+                        atproto_index.entries["vcs"].entries["git"].entries[push_options.pr_repo].entries["pull_requests"],
+                        json.dumps(pull_request),
+                    )
+                    if created:
+                        print(f"Updated pull_request to {namespace}/{push_options.pr_repo}: {pull_request}")
 
     return response
 

@@ -17,7 +17,8 @@ rm -rf my-repo/ && git clone http://localhost:8080/$USER.atproto-pds.fqdn.exampl
 echo 2222 >> README.md && git add README.md && git commit -sm README.md && git push
 
 # Create Pull Request
-git push -o pr.ns=alice.atproto-pds.fqdn.example.com -o pr.branch=main
+git checkout -b test-branch
+git push -o pr.ns=alice.atproto-pds.fqdn.example.com -o pr.repo=example-policy-maintainers -o pr.branch=main origin test-branch
 ```
 
 You can view repo files at: http://localhost:8080/$USER.atproto-pds.fqdn.example.com/my-repo/blob/HEAD/README.md
