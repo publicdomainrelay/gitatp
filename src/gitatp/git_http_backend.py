@@ -856,15 +856,20 @@ class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
         del app[self.app_key]
 
     async def git_receive_pack(self, request):
-        client = app[self.app_key]
+        client = request.app[self.app_key]
 
-    @web.middleware
-    async def __call__(self, request, handler):
-        path_info = request.match_info.get('path', '')
-        # path_info = f"{repo_name}.git/{request.match_info.get('path', '')}"
-        if not path_info.endswith("git-receive-pack"):
+    def make_middleware(self):
+        @web.middleware
+        async def middleware(request, handler):
+            nonlocal self
+            snoop.pp(request.path)
+            if (
+                request.path.endswith("/info/refs")
+                or request.path.endswith("git-receive-pack")
+            ):
+                return await self.git_receive_pack(request)
             return await handler(request)
-        return await self.git_receive_pack(request)
+        return middleware
 
 if __name__ == "__main__":
     # Start the server

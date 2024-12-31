@@ -94,20 +94,23 @@ def render_content(namespace: str, repo_name: str, ref: str, path: str) -> HTMLR
 # Step 2: Define an aiohttp app and adapt the FastAPI app
 async def init_aiohttp_app(middlewares):
     aiohttp_app = web.Application(
-        middlewares=middlewares,
+        middlewares=[
+            middleware.make_middleware()
+            for middleware in middlewares
+        ],
     )
 
     # Create ASGIResource which handle rendering
-    asgi_resource = ASGIResource(fastapi_app)
+    # asgi_resource = ASGIResource(fastapi_app)
 
     # Register routes
     # aiohttp_app.router.add_route("*", "/{namespace}/{repo}.git/{path:.*}", handle_git_backend_request)
 
     # Register resource
-    aiohttp_app.router.register_resource(asgi_resource)
+    # aiohttp_app.router.register_resource(asgi_resource)
 
     # Mount startup and shutdown events from aiohttp to ASGI app
-    asgi_resource.lifespan_mount(aiohttp_app)
+    # asgi_resource.lifespan_mount(aiohttp_app)
 
     return aiohttp_app
 
