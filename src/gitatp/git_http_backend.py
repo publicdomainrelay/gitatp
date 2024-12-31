@@ -1,4 +1,5 @@
 import os
+import abc
 import sys
 import json
 import atexit
@@ -21,7 +22,7 @@ import subprocess
 import argparse
 
 from pydantic import BaseModel, Field, AliasChoices
-from atproto import Client, models
+from atproto import AsyncClient, Client, models
 import keyring
 import atprotobin.zip_image
 import snoop
@@ -190,9 +191,11 @@ atproto_index.parent = atproto_index.root
 def atproto_index_read_recurse(client, index, index_entry):
     # TODO Support for pull requests. Maintiners MAY push to group repo.
     # Maintainers and others SHOULD pull request group repo.
+    # FIXME FIXME FIXME
     # TODO If there is a later reply in the thread with the same text and it's a
     # file __getattr__() on the CacheATProtoIndex object should resolve down the
     # chain using traverse_config_get(target, *args) unified config stuff.
+    # FIXME FIXME FIXME
     owner_dids = [index.owner_profile.did]
     if index_entry.replies is not None:
         for reply_entry in index_entry.replies:
@@ -778,6 +781,90 @@ async def handle_git_backend_request(request):
 # Set up the application
 app = web.Application()
 app.router.add_route("*", "/{namespace}/{repo}.git/{path:.*}", handle_git_backend_request)
+
+class AioHTTPGitHTTPBackend:
+    @abc.abstractmethod
+    async def on_startup(self, app):
+        pass
+
+    @abc.abstractmethod
+    async def on_cleanup(self, app):
+        pass
+
+    @abc.abstractmethod
+    async def git_receive_pack(self, request):
+        pass
+
+class AioHTTPGitHTTPBackendATProtoConfig(BaseModel):
+    atproto_base_url: str
+    atproto_handle: str
+    atproto_password: str
+    repos_directory: pathlib.Path
+
+class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
+    def __init__(self, config):
+        self.config = config
+        self.setup_cache()
+
+    def setup_cache(self):
+        atproto_cache = CacheATProtoNamespaces()
+        self.atproto_cache = atproto_cache
+        # TODO Path from config
+        atproto_cache_path = Path("~", ".cache", "atproto_vcs_git_cache.json").expanduser()
+        atproto_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        atexit.register(
+            lambda: atproto_cache_path.write_text(
+                atproto_cache.model_dump_json(),
+            )
+        )
+        if False and atproto_cache_path.exists():
+            atproto_cache = CacheATProtoIndex.model_validate_json(atproto_cache_path.read_text())
+        atproto_cache.namespaces.setdefault(
+            atproto_handle,
+            CacheATProtoNamespace(
+                index=CacheATProtoIndex(text="index"),
+            )
+        )
+        atproto_namespace = atproto_cache.namespaces[atproto_handle]
+        self.atproto_namespace = atproto_namespace
+        atproto_index = atproto_namespace.index
+        self.atproto_index = atproto_index
+
+    async def on_startup(self, app):
+        self.app_key = web.AppKey(
+            "git_http_backend_atproto_client",
+            AsyncClient,
+        )
+
+        client = AsyncClient(
+            base_url=self.config.atproto_base_url,
+        )
+        app[self.app_key] = client
+
+        await client.login(
+            self.config.atproto_handle,
+            self.config.atproto_password,
+        )
+
+        if self.atproto_index.owner_profile is None:
+            self.atproto_index.owner_profile = await client.get_profile(
+                self.config.atproto_handle,
+            )
+        self.atproto_index.root = self.atproto_index.owner_profile.pinned_post
+
+    async def on_cleanup(self, app):
+        del app[self.app_key]
+
+    async def git_receive_pack(self, request):
+        client = app[self.app_key]
+
+    @web.middleware
+    async def __call__(self, request, handler):
+        path_info = request.match_info.get('path', '')
+        # path_info = f"{repo_name}.git/{request.match_info.get('path', '')}"
+        if not path_info.endswith("git-receive-pack"):
+            return await handler(request)
+        return await self.git_receive_pack(request)
 
 if __name__ == "__main__":
     # Start the server

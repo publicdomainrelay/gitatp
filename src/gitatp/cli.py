@@ -7,6 +7,7 @@ import subprocess
 from .git_http_backend import *
 
 import magic
+import keyring
 import snoop
 
 def file_contents_bytes_to_markdown(file_path: str, content: bytes) -> str:
@@ -91,14 +92,16 @@ def render_content(namespace: str, repo_name: str, ref: str, path: str) -> HTMLR
     )
 
 # Step 2: Define an aiohttp app and adapt the FastAPI app
-async def init_aiohttp_app():
-    aiohttp_app = web.Application()
+async def init_aiohttp_app(middlewares):
+    aiohttp_app = web.Application(
+        middlewares=middlewares,
+    )
 
     # Create ASGIResource which handle rendering
     asgi_resource = ASGIResource(fastapi_app)
 
     # Register routes
-    aiohttp_app.router.add_route("*", "/{namespace}/{repo}.git/{path:.*}", handle_git_backend_request)
+    # aiohttp_app.router.add_route("*", "/{namespace}/{repo}.git/{path:.*}", handle_git_backend_request)
 
     # Register resource
     aiohttp_app.router.register_resource(asgi_resource)
@@ -108,9 +111,70 @@ async def init_aiohttp_app():
 
     return aiohttp_app
 
+def make_parser():
+    parser = argparse.ArgumentParser(prog='atproto-git', usage='%(prog)s [options]')
+    parser.add_argument('--repos-directory', required=True, dest="repos_directory", help='directory for local copies of git repos')
+
+    config = configparser.ConfigParser()
+    config.read(str(Path("~", ".gitconfig").expanduser()))
+
+    try:
+        atproto_handle = config["user"]["atproto"]
+    except Exception as e:
+        raise Exception(f"You must run: $ git config --global user.atproto $USER.atproto-pds.fqdn.example.com") from e
+    try:
+        atproto_email = config["user"]["email"]
+    except Exception as e:
+        raise Exception(f"You must run: $ git config --global user.email $USER@example.com") from e
+
+    atproto_handle_username = atproto_handle.split(".")[0]
+    atproto_base_url = "https://" + ".".join(atproto_handle.split(".")[1:])
+    keyring_atproto_password = ".".join(["password", atproto_handle])
+
+    try:
+        atproto_password = keyring.get_password(
+            atproto_email,
+            keyring_atproto_password,
+        )
+    except Exception as e:
+        raise Exception(f"You must run: $ python -m keyring set {atproto_email} {keyring_atproto_password}") from e
+
+    parser.add_argument(
+        '--atproto-base-url',
+        dest="atproto_base_url",
+        default=atproto_base_url,
+    )
+    parser.add_argument(
+        '--atproto-handle',
+        dest="atproto_handle",
+        default=atproto_handle,
+    )
+    parser.add_argument(
+        '--atproto-password',
+        dest="atproto_password",
+        default=atproto_password,
+    )
+
+    return parser
+
 def main() -> None:
     loop = asyncio.get_event_loop()
-    aiohttp_app = loop.run_until_complete(init_aiohttp_app())
+
+    parser = make_parser()
+    args = parser.parse_args()
+
+    atproto_config = AioHTTPGitHTTPBackendATProtoConfig(**vars(args))
+    atproto_middleware = AioHTTPGitHTTPBackendATProto(atproto_config)
+
+    middlewares = [
+        atproto_middleware,
+    ]
+
+    aiohttp_app = loop.run_until_complete(init_aiohttp_app(middlewares))
+
+    for middleware in middlewares:
+        aiohttp_app.on_startup.append(middleware.on_startup)
+        aiohttp_app.on_cleanup.append(middleware.on_cleanup)
 
     # Start the server
     web.run_app(aiohttp_app, host="0.0.0.0", port=8080)
