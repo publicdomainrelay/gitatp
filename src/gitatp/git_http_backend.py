@@ -125,7 +125,7 @@ if not int(os.environ.get("GITATP_NO_SYNC", "0")):
         atproto_index.owner_profile = client.get_profile(atproto_handle)
     atproto_index.root = atproto_index.owner_profile.pinned_post
 
-def update_profile(client, pinned_post):
+async def update_profile(client, pinned_post):
     # TODO Use Python client APIs once available
     global atproto_base_url
     global atproto_handle
@@ -188,7 +188,7 @@ atproto_index.post = atproto_index.root
 atproto_index.parent = atproto_index.root
 
 # TODO Add ctx with policy object and grab owners from atprotobin style manifest
-def atproto_index_read_recurse(client, index, index_entry):
+async def atproto_index_read_recurse(client, index, index_entry):
     # TODO Support for pull requests. Maintiners MAY push to group repo.
     # Maintainers and others SHOULD pull request group repo.
     # FIXME FIXME FIXME
@@ -230,7 +230,7 @@ def atproto_index_read_recurse(client, index, index_entry):
                 },
                 **sub_index_kwargs,
             )
-            atproto_index_read_recurse(client, sub_index, reply_entry)
+            await atproto_index_read_recurse(client, sub_index, reply_entry)
             if index_entry.post.record.text in index.entries:
                 index.entries[reply_entry.post.record.text].entries.update(
                     sub_index.entries,
@@ -239,14 +239,14 @@ def atproto_index_read_recurse(client, index, index_entry):
                 index.entries[reply_entry.post.record.text] = sub_index
 
 # index_entry = client.get_posts([index.post.uri])
-def atproto_index_read(client, index, depth: int = None):
-    for index_type, index_entry in client.get_post_thread(
+async def atproto_index_read(client, index, depth: int = None):
+    async for index_type, index_entry in client.get_post_thread(
         index.post.uri,
         depth=depth,
     ):
         # snoop.pp(index_type, index_entry)
         if index_type == 'thread':
-            atproto_index_read_recurse(client, index, index_entry)
+            await atproto_index_read_recurse(client, index, index_entry)
         elif index_type == 'threadgate':
             pass
         else:
@@ -306,7 +306,7 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
         kwargs["image"] = data_as_image
         if data_as_image_hash is not None:
             kwargs["image_alt"] = data_as_image_hash
-    post = method(
+    post = await method(
         text=index_entry_key,
         reply_to=models.AppBskyFeedPost.ReplyRef(parent=parent, root=root),
         **kwargs,
@@ -339,9 +339,9 @@ def atproto_index_create(index, index_entry_key, data_as_image: bytes = None, da
     return True, index.entries[index_entry_key]
 
 if not int(os.environ.get("GITATP_NO_SYNC", "0")):
-    atproto_index_read(client, atproto_index, depth=2)
-    atproto_index_create(atproto_index, "vcs")
-    atproto_index_create(atproto_index.entries["vcs"], "git")
+    await atproto_index_read(client, atproto_index, depth=2)
+    await atproto_index_create(atproto_index, "vcs")
+    await atproto_index_create(atproto_index.entries["vcs"], "git")
 
 # Configuration
 GIT_PROJECT_ROOT = args.repos_directory
@@ -398,7 +398,7 @@ def extract_zip_of_files(repo_path, blob, files):
 
 # TODO Do this directly on the git repos instead of having a repos dir
 
-def download_from_atproto_to_local_repos_directory_git(client, namespace, repo_name, index):
+async def download_from_atproto_to_local_repos_directory_git(client, namespace, repo_name, index):
     # TODO Context for projects root
     global GIT_PROJECT_ROOT
     if not repo_name.endswith(".git"):
@@ -429,7 +429,7 @@ def download_from_atproto_to_local_repos_directory_git(client, namespace, repo_n
         else:
             print(f"Downloading internal file to {repo_name}: {repo_file_path}")
             # TODO Timestamps or something
-            blob = client.com.atproto.sync.get_blob(
+            blob = await client.com.atproto.sync.get_blob(
                 models.com.atproto.sync.get_blob.Params(
                     cid=index_entry.blob.cid,
                     did=index_entry.blob.did,
@@ -506,91 +506,9 @@ def parse_push_options(chunk: bytes):
 # Handle Git HTTP Backend requests
 async def handle_git_backend_request(request):
     # TODO OAuth -> Client SPA when on loopback, backend on relays
+    pass
 
-    namespace = request.match_info.get('namespace', '')
-    atproto_cache.namespaces.setdefault(
-        namespace,
-        CacheATProtoNamespace(
-            index=CacheATProtoIndex(text="index"),
-        )
-    )
-    atproto_namespace = atproto_cache.namespaces[namespace]
-    atproto_index = atproto_namespace.index
-    if not int(os.environ.get("GITATP_NO_SYNC", "0")):
-        if atproto_index.owner_profile is None:
-            atproto_index.owner_profile = client.get_profile(namespace)
-        atproto_index.root = atproto_index.owner_profile.pinned_post
-    atproto_index.post = atproto_index.root
-    atproto_index.parent = atproto_index.root
-
-    repo_name = request.match_info.get('repo', '')
-    if repo_name.endswith(".git"):
-        repo_name = repo_name[:-4]
-
-    # Ensure there is a bare Git repository for testing
-    local_repo_path = Path(GIT_PROJECT_ROOT, namespace, f"{repo_name}.git")
-    if not local_repo_path.is_dir():
-        local_repo_path.parent.mkdir(parents=True, exist_ok=True)
-        os.system(f"git init --bare {local_repo_path}")
-        os.system(f"rm -rf {local_repo_path}/hooks/")
-
-    # Sync from ATProto
-    if not int(os.environ.get("GITATP_NO_SYNC", "0")):
-        atproto_index_read(client, atproto_index, depth=2)
-        if (
-            "vcs" in atproto_index.entries
-            and "git" in atproto_index.entries["vcs"].entries
-        ):
-            atproto_index_read(client, atproto_index.entries["vcs"].entries["git"])
-            if repo_name in atproto_index.entries["vcs"].entries["git"].entries:
-                atproto_repo = atproto_index.entries["vcs"].entries["git"].entries[repo_name]
-                if (
-                    ".git" in atproto_repo.entries
-                    and "metadata" in atproto_repo.entries
-                ):
-                    download_from_atproto_to_local_repos_directory_git(
-                        client,
-                        namespace,
-                        repo_name,
-                        atproto_repo.entries[".git"],
-                    )
-
-    subprocess.run(
-        ["git", "config", "receive.advertisePushOptions", "true"],
-        cwd=str(local_repo_path),
-    )
-
-    path_info = f"{repo_name}.git/{request.match_info.get('path', '')}"
-    print(f"path_info: {namespace}/{path_info}")
-    env = {
-        "GIT_PROJECT_ROOT": str(local_repo_path.parent),
-        "GIT_HTTP_EXPORT_ALL": GIT_HTTP_EXPORT_ALL,
-        "PATH_INFO": f"/{path_info}",
-        "REMOTE_USER": request.remote or "",
-        "REMOTE_ADDR": request.transport.get_extra_info("peername")[0],
-        "REQUEST_METHOD": request.method,
-        "QUERY_STRING": request.query_string,
-        "CONTENT_TYPE": request.headers.get("Content-Type", ""),
-    }
-
-    # Copy relevant HTTP headers to environment variables
-    for header in ("Content-Type", "User-Agent", "Accept-Encoding", "Pragma"):
-        header_value = request.headers.get(header)
-        if header_value:
-            env["HTTP_" + header.upper().replace("-", "_")] = header_value
-
-    # Prepare the subprocess to run git http-backend
-    proc = await asyncio.create_subprocess_exec(
-        "git", "http-backend",
-        env=env,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=sys.stderr,  # Output stderr to the server's stderr
-    )
-
-    # Push options are parsed from git client upload pack
-    push_options = {}
-
+def make_write_to_git(push_options):
     async def write_to_git(stdin):
         nonlocal push_options
         try:
@@ -604,6 +522,9 @@ async def handle_git_backend_request(request):
             if not stdin.is_closing():
                 stdin.close()
 
+    return write_to_git
+
+def make_read_from_git():
     # Read the response from git http-backend and send it back to the client
     async def read_from_git(stdout, response):
         headers = {}
@@ -641,25 +562,227 @@ async def handle_git_backend_request(request):
             await response.write(buffer)
         await response.write_eof()
 
-    # Create a StreamResponse to send data back to the client
-    response = web.StreamResponse()
+    return read_from_git
 
-    # Run the read and write tasks concurrently
-    await asyncio.gather(
-        write_to_git(proc.stdin),
-        read_from_git(proc.stdout, response),
-    )
+# Set up the application
+app = web.Application()
+app.router.add_route("*", "/{namespace}/{repo}.git/{path:.*}", handle_git_backend_request)
 
-    # Wait for the subprocess to finish
-    await proc.wait()
+class AioHTTPGitHTTPBackend:
+    @abc.abstractmethod
+    async def on_startup(self, app):
+        pass
 
-    push_options = PushOptions(**push_options)
+    @abc.abstractmethod
+    async def on_cleanup(self, app):
+        pass
 
-    # Handle push events (git-receive-pack)
-    if (
-        path_info.endswith("git-receive-pack")
-        and not int(os.environ.get("GITATP_NO_SYNC", "0"))
-    ):
+    @abc.abstractmethod
+    async def pre_git_http_backend(self, request):
+        pass
+
+    @abc.abstractmethod
+    async def git_receive_pack(self, request):
+        pass
+
+    async def git_http_backend(self, request):
+        # Create repo if it should exist
+        await self.pre_git_http_backend(request)
+
+        # TODO Replace file with original after proc.wait()
+        subprocess.run(
+            ["git", "config", "receive.advertisePushOptions", "true"],
+            cwd=str(local_repo_path),
+        )
+
+        path_info = f"{repo_name}.git/{request.match_info.get('path', '')}"
+        print(f"path_info: {namespace}/{path_info}")
+        env = {
+            "GIT_PROJECT_ROOT": str(local_repo_path.parent),
+            "GIT_HTTP_EXPORT_ALL": GIT_HTTP_EXPORT_ALL,
+            "PATH_INFO": f"/{path_info}",
+            "REMOTE_USER": request.remote or "",
+            "REMOTE_ADDR": request.transport.get_extra_info("peername")[0],
+            "REQUEST_METHOD": request.method,
+            "QUERY_STRING": request.query_string,
+            "CONTENT_TYPE": request.headers.get("Content-Type", ""),
+        }
+
+        # Copy relevant HTTP headers to environment variables
+        for header in ("Content-Type", "User-Agent", "Accept-Encoding", "Pragma"):
+            header_value = request.headers.get(header)
+            if header_value:
+                env["HTTP_" + header.upper().replace("-", "_")] = header_value
+
+        # Prepare the subprocess to run git http-backend
+        proc = await asyncio.create_subprocess_exec(
+            "git", "http-backend",
+            env=env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=sys.stderr,  # Output stderr to the server's stderr
+        )
+
+        # Push options are parsed from git client upload pack
+        push_options = {}
+
+        # Create a StreamResponse to send data back to the client
+        response = web.StreamResponse()
+
+        # Run the read and write tasks concurrently
+        await asyncio.gather(
+            make_write_to_git(push_options)(proc.stdin),
+            make_read_from_git()(proc.stdout, response),
+        )
+
+        # Wait for the subprocess to finish
+        await proc.wait()
+
+        push_options = PushOptions(**push_options)
+
+        # Handle push events (git-receive-pack)
+        if (
+            path_info.endswith("git-receive-pack")
+        ):
+            return await self.git_receive_pack(
+                request,
+                push_options,
+            )
+
+        return response
+
+
+class AioHTTPGitHTTPBackendATProtoConfig(BaseModel):
+    atproto_base_url: str
+    atproto_handle: str
+    atproto_password: str
+    repos_directory: pathlib.Path
+
+class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
+    def __init__(self, config):
+        self.config = config
+        self.setup_cache()
+
+    def setup_cache(self):
+        atproto_cache = CacheATProtoNamespaces()
+        self.atproto_cache = atproto_cache
+        # TODO Path from config
+        atproto_cache_path = Path("~", ".cache", "atproto_vcs_git_cache.json").expanduser()
+        atproto_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        atexit.register(
+            lambda: atproto_cache_path.write_text(
+                atproto_cache.model_dump_json(),
+            )
+        )
+        if False and atproto_cache_path.exists():
+            atproto_cache = CacheATProtoIndex.model_validate_json(atproto_cache_path.read_text())
+        atproto_cache.namespaces.setdefault(
+            atproto_handle,
+            CacheATProtoNamespace(
+                index=CacheATProtoIndex(text="index"),
+            )
+        )
+        atproto_namespace = atproto_cache.namespaces[atproto_handle]
+        self.atproto_namespace = atproto_namespace
+        atproto_index = atproto_namespace.index
+        self.atproto_index = atproto_index
+
+    async def on_startup(self, app):
+        self.app_key = web.AppKey(
+            "git_http_backend_atproto_client",
+            AsyncClient,
+        )
+
+        client = AsyncClient(
+            base_url=self.config.atproto_base_url,
+        )
+        app[self.app_key] = client
+
+        await client.login(
+            self.config.atproto_handle,
+            self.config.atproto_password,
+        )
+
+        if self.atproto_index.owner_profile is None:
+            self.atproto_index.owner_profile = await client.get_profile(
+                self.config.atproto_handle,
+            )
+        self.atproto_index.root = self.atproto_index.owner_profile.pinned_post
+
+        atproto_index = self.atproto_index
+
+        # NOTE If you delete the index without unpinning first everything breaks
+        await atproto_index_read(client, atproto_index, depth=2)
+        await atproto_index_create(atproto_index, "vcs")
+        await atproto_index_create(atproto_index.entries["vcs"], "git")
+
+        if atproto_index.root is None:
+            post = await client.send_post(text="index")
+            await update_profile(client, pinned_post=post)
+            atproto_index.root = post
+
+        # For top level index all props are the same
+        atproto_index.post = atproto_index.root
+        atproto_index.parent = atproto_index.root
+
+    async def on_cleanup(self, app):
+        del app[self.app_key]
+
+    async def pre_git_http_backend(self, request):
+        client = request.app[self.app_key]
+
+        namespace = request.match_info.get('namespace', '')
+        atproto_cache.namespaces.setdefault(
+            namespace,
+            CacheATProtoNamespace(
+                index=CacheATProtoIndex(text="index"),
+            )
+        )
+        atproto_namespace = atproto_cache.namespaces[namespace]
+        atproto_index = atproto_namespace.index
+        if not int(os.environ.get("GITATP_NO_SYNC", "0")):
+            if atproto_index.owner_profile is None:
+                atproto_index.owner_profile = await client.get_profile(namespace)
+            atproto_index.root = atproto_index.owner_profile.pinned_post
+        atproto_index.post = atproto_index.root
+        atproto_index.parent = atproto_index.root
+
+        repo_name = request.match_info.get('repo', '')
+        if repo_name.endswith(".git"):
+            repo_name = repo_name[:-4]
+
+        # Ensure there is a bare Git repository for testing
+        local_repo_path = Path(GIT_PROJECT_ROOT, namespace, f"{repo_name}.git")
+        if not local_repo_path.is_dir():
+            local_repo_path.parent.mkdir(parents=True, exist_ok=True)
+            os.system(f"git init --bare {local_repo_path}")
+            os.system(f"rm -rf {local_repo_path}/hooks/")
+
+        # Sync from ATProto
+        if not int(os.environ.get("GITATP_NO_SYNC", "0")):
+            await atproto_index_read(client, atproto_index, depth=2)
+            if (
+                "vcs" in atproto_index.entries
+                and "git" in atproto_index.entries["vcs"].entries
+            ):
+                await atproto_index_read(client, atproto_index.entries["vcs"].entries["git"])
+                if repo_name in atproto_index.entries["vcs"].entries["git"].entries:
+                    atproto_repo = atproto_index.entries["vcs"].entries["git"].entries[repo_name]
+                    if (
+                        ".git" in atproto_repo.entries
+                        and "metadata" in atproto_repo.entries
+                    ):
+                        await download_from_atproto_to_local_repos_directory_git(
+                            client,
+                            namespace,
+                            repo_name,
+                            atproto_repo.entries[".git"],
+                        )
+
+    async def git_receive_pack(self, request, push_options):
+        if int(os.environ.get("GITATP_NO_SYNC", "0")):
+            return
+
         # TODO Better way for transparent .git on local repo directories
         # TODO Use atprotobin.zip_image on all non-binary files
         atproto_index_create(atproto_index.entries["vcs"].entries["git"], repo_name)
@@ -742,18 +865,18 @@ async def handle_git_backend_request(request):
             atproto_namespace = atproto_cache.namespaces[namespace]
             atproto_index = atproto_namespace.index
             if atproto_index.owner_profile is None:
-                atproto_index.owner_profile = client.get_profile(namespace)
+                atproto_index.owner_profile = await client.get_profile(namespace)
             atproto_index.root = atproto_index.owner_profile.pinned_post
             atproto_index.post = atproto_index.root
             atproto_index.parent = atproto_index.root
 
-            atproto_index_read(client, atproto_index, depth=2)
+            await atproto_index_read(client, atproto_index, depth=2)
 
             if (
                 "vcs" in atproto_index.entries
                 and "git" in atproto_index.entries["vcs"].entries
             ):
-                atproto_index_read(client, atproto_index.entries["vcs"].entries["git"], depth=2)
+                await atproto_index_read(client, atproto_index.entries["vcs"].entries["git"], depth=2)
                 if (
                     push_options.pr_repo in atproto_index.entries["vcs"].entries["git"].entries
                     and "pull_requests" in atproto_index.entries["vcs"].entries["git"].entries[push_options.pr_repo].entries
@@ -776,88 +899,6 @@ async def handle_git_backend_request(request):
                     if created:
                         print(f"Updated pull_request to {namespace}/{push_options.pr_repo}: {pull_request}")
 
-    return response
-
-# Set up the application
-app = web.Application()
-app.router.add_route("*", "/{namespace}/{repo}.git/{path:.*}", handle_git_backend_request)
-
-class AioHTTPGitHTTPBackend:
-    @abc.abstractmethod
-    async def on_startup(self, app):
-        pass
-
-    @abc.abstractmethod
-    async def on_cleanup(self, app):
-        pass
-
-    @abc.abstractmethod
-    async def git_receive_pack(self, request):
-        pass
-
-class AioHTTPGitHTTPBackendATProtoConfig(BaseModel):
-    atproto_base_url: str
-    atproto_handle: str
-    atproto_password: str
-    repos_directory: pathlib.Path
-
-class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
-    def __init__(self, config):
-        self.config = config
-        self.setup_cache()
-
-    def setup_cache(self):
-        atproto_cache = CacheATProtoNamespaces()
-        self.atproto_cache = atproto_cache
-        # TODO Path from config
-        atproto_cache_path = Path("~", ".cache", "atproto_vcs_git_cache.json").expanduser()
-        atproto_cache_path.parent.mkdir(parents=True, exist_ok=True)
-        atexit.register(
-            lambda: atproto_cache_path.write_text(
-                atproto_cache.model_dump_json(),
-            )
-        )
-        if False and atproto_cache_path.exists():
-            atproto_cache = CacheATProtoIndex.model_validate_json(atproto_cache_path.read_text())
-        atproto_cache.namespaces.setdefault(
-            atproto_handle,
-            CacheATProtoNamespace(
-                index=CacheATProtoIndex(text="index"),
-            )
-        )
-        atproto_namespace = atproto_cache.namespaces[atproto_handle]
-        self.atproto_namespace = atproto_namespace
-        atproto_index = atproto_namespace.index
-        self.atproto_index = atproto_index
-
-    async def on_startup(self, app):
-        self.app_key = web.AppKey(
-            "git_http_backend_atproto_client",
-            AsyncClient,
-        )
-
-        client = AsyncClient(
-            base_url=self.config.atproto_base_url,
-        )
-        app[self.app_key] = client
-
-        await client.login(
-            self.config.atproto_handle,
-            self.config.atproto_password,
-        )
-
-        if self.atproto_index.owner_profile is None:
-            self.atproto_index.owner_profile = await client.get_profile(
-                self.config.atproto_handle,
-            )
-        self.atproto_index.root = self.atproto_index.owner_profile.pinned_post
-
-    async def on_cleanup(self, app):
-        del app[self.app_key]
-
-    async def git_receive_pack(self, request):
-        client = request.app[self.app_key]
-
     def make_middleware(self):
         @web.middleware
         async def middleware(request, handler):
@@ -867,7 +908,7 @@ class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
                 request.path.endswith("/info/refs")
                 or request.path.endswith("git-receive-pack")
             ):
-                return await self.git_receive_pack(request)
+                return await self.git_http_backend(request)
             return await handler(request)
         return middleware
 
