@@ -65,17 +65,14 @@ class CacheATProtoNamespaces(BaseModel):
         default_factory=lambda: {},
     )
 
-async def update_profile(client, pinned_post):
+async def update_profile(client, config, pinned_post):
     # TODO Use Python client APIs once available
-    global atproto_base_url
-    global atproto_handle
-    global atproto_password
     env = {
         **os.environ,
         **{
-            "ATPROTO_BASE_URL": atproto_base_url,
-            "ATPROTO_HANDLE": atproto_handle,
-            "ATPROTO_PASSWORD": atproto_password,
+            "ATPROTO_BASE_URL": config.atproto_base_url,
+            "ATPROTO_HANDLE": config.atproto_handle,
+            "ATPROTO_PASSWORD": config.atproto_password,
             "ATPROTO_PINNED_POST_URI": pinned_post.uri,
             "ATPROTO_PINNED_POST_CID": pinned_post.cid,
         },
@@ -651,7 +648,7 @@ class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
 
         if atproto_index.root is None:
             post = await client.send_post(text="index")
-            await update_profile(client, pinned_post=post)
+            await update_profile(client, self.config, pinned_post=post)
             atproto_index.root = post
 
         # For top level index all props are the same
