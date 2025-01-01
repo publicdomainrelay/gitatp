@@ -713,6 +713,20 @@ class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
                             atproto_repo.entries[".git"],
                         )
 
+    async def git_receive_pack_upload_internal_file(self, client, _namespace, repo_name, atproto_repo, local_repo_path, internal_file):
+        repo_file_path = str(internal_file.relative_to(local_repo_path))
+        created, cached = await atproto_index_create(
+            client,
+            atproto_repo.entries[".git"],
+            repo_file_path,
+            encode_path=FilePathToEncode(
+                repo_path=local_repo_path,
+                local_path=internal_file,
+            ),
+        )
+        if created:
+            print(f"Updated internal file in {repo_name}: {repo_file_path}")
+
     async def git_receive_pack(self, request, namespace, repo_name, local_repo_path, push_options):
         if int(os.environ.get("GITATP_NO_SYNC", "0")):
             return
@@ -724,22 +738,25 @@ class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
         # TODO Better way for transparent .git on local repo directories
         # TODO Use atprotobin.zip_image on all non-binary files
         await atproto_index_create(client, atproto_index.entries["vcs"].entries["git"], repo_name)
-        await atproto_index_create(client, atproto_index.entries["vcs"].entries["git"].entries[repo_name], ".git")
-        await atproto_index_create(client, atproto_index.entries["vcs"].entries["git"].entries[repo_name], "metadata")
-        await atproto_index_create(client, atproto_index.entries["vcs"].entries["git"].entries[repo_name], "pull_requests")
-        for internal_file in list_git_internal_files(local_repo_path):
-            repo_file_path = str(internal_file.relative_to(local_repo_path))
-            created, cached = await atproto_index_create(
-                client,
-                atproto_index.entries["vcs"].entries["git"].entries[repo_name].entries[".git"],
-                repo_file_path,
-                encode_path=FilePathToEncode(
-                    repo_path=local_repo_path,
-                    local_path=internal_file,
-                ),
-            )
-            if created:
-                print(f"Updated internal file in {repo_name}: {repo_file_path}")
+        atproto_repo = atproto_index.entries["vcs"].entries["git"].entries[repo_name]
+        await asyncio.gather(
+            atproto_index_create(client, atproto_repo, ".git"),
+            atproto_index_create(client, atproto_repo, "metadata"),
+            atproto_index_create(client, atproto_repo, "pull_requests"),
+        )
+        await asyncio.gather(
+            *[
+                self.git_receive_pack_upload_internal_file(
+                    client,
+                    namespace,
+                    repo_name,
+                    atproto_repo,
+                    local_repo_path,
+                    internal_file,
+                )
+                for internal_file in list_git_internal_files(local_repo_path)
+            ]
+        )
 
         # Update each branches manifest if needed
         cmd = [
