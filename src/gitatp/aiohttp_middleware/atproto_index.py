@@ -1,31 +1,26 @@
 import os
-import abc
-import sys
 import json
 import atexit
 import asyncio
-import base64
-import shutil
 import pprint
 import warnings
-import traceback
-import contextlib
-from aiohttp import web
 import pathlib
 from pathlib import Path
 from io import BytesIO
 from typing import Optional
 import zipfile
 import hashlib
-import configparser
 import subprocess
-import argparse
 
-from pydantic import BaseModel, Field, AliasChoices
+import aiohttp.web
+from pydantic import BaseModel, Field
 from atproto import AsyncClient, models
-import keyring
 import atprotobin.zip_image
 import snoop
+
+from ..util.zip_image import *
+from ..util import git_subprocess
+from .base import AioHTTPGitHTTPBackend
 
 # Helper scripts for APIs not available to Python client, etc.
 # TODO importlib.resources once packaged
@@ -266,52 +261,6 @@ async def atproto_index_create(client, index, index_entry_key, data_as_image: by
     )
     return True, index.entries[index_entry_key]
 
-# Utility to list all internal files in a Git repository
-def list_git_internal_files(repo_path):
-    files = []
-    git_dir = Path(repo_path)
-    for file in git_dir.rglob("*"):
-        if file.is_file():
-            yield file
-
-# Create a minimal PNG header
-PNG_HEADER = (
-    b'\x89PNG\r\n\x1a\n'  # PNG signature
-    b'\x00\x00\x00\r'     # IHDR chunk length
-    b'IHDR'               # IHDR chunk type
-    b'\x00\x00\x00\x01'   # Width: 1
-    b'\x00\x00\x00\x01'   # Height: 1
-    b'\x08'               # Bit depth: 8
-    b'\x02'               # Color type: Truecolor
-    b'\x00'               # Compression method
-    b'\x00'               # Filter method
-    b'\x00'               # Interlace method
-    b'\x90wS\xde'         # CRC
-    b'\x00\x00\x00\x0a'   # IDAT chunk length
-    b'IDAT'               # IDAT chunk type
-    b'\x78\x9c\x63\x60\x00\x00\x00\x02\x00\x01'  # Compressed data
-    b'\x02\x7e\xe5\x45'   # CRC
-    b'\x00\x00\x00\x00'   # IEND chunk length
-    b'IEND'               # IEND chunk type
-    b'\xaeB`\x82'         # CRC
-)
-
-def extract_zip_from_png(png_zip_data):
-    global PNG_HEADER
-    return png_zip_data[len(PNG_HEADER):]
-
-# Extract zip archive containing the internal files
-def extract_zip_of_files(repo_path, blob, files):
-    zip_buffer = BytesIO(blob)
-    with zipfile.ZipFile(zip_buffer, 'r', zipfile.ZIP_DEFLATED) as zipf:
-        for file in files:
-            local_filepath = repo_path.joinpath(file)
-            local_filepath.parent.mkdir(parents=True, exist_ok=True)
-            local_filepath.write_bytes(b"")
-            local_filepath.chmod(0o600)
-            with zipf.open(file) as zip_filobj, open(local_filepath, "wb") as local_fileobj:
-                shutil.copyfileobj(zip_filobj, local_fileobj)
-
 # TODO Do this directly on the git repos instead of having a repos dir
 
 async def download_from_atproto_to_local_repos_directory_git(client, git_project_root, namespace, repo_name, index):
@@ -356,231 +305,6 @@ async def download_from_atproto_to_local_repos_directory_git(client, git_project
             extract_zip_of_files(repo_path, zip_data, [index_entry.text])
             print(f"Successful download of internal file to {repo_name}: {repo_file_path}")
 
-# Create a zip archive containing the internal files
-def create_zip_of_files(repo_path, files):
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for file in files:
-            arcname = str(file.relative_to(repo_path))
-            zipf.write(file, arcname=arcname)
-    zip_buffer.seek(0)
-    return zip_buffer.read()
-
-
-# Create a PNG image that also contains the zip archive
-def create_png_with_zip(zip_data):
-    global PNG_HEADER
-    # Combine the PNG header and the zip data
-    png_zip_data = PNG_HEADER + zip_data
-    return png_zip_data
-
-class PushOptions(BaseModel):
-    branch: str = None
-    pr_branch: str = Field(
-        validation_alias=AliasChoices('pr.branch'),
-        default=None,
-    )
-    pr_ns: str = Field(
-        validation_alias=AliasChoices('pr.ns'),
-        default=None,
-    )
-    pr_repo: str = Field(
-        validation_alias=AliasChoices('pr.repo'),
-        default=None,
-    )
-
-def parse_push_options(chunk: bytes):
-    push_options = {}
-    if b"agent=" in chunk and b"0000PACK" in chunk:
-        chunk_header = chunk[
-            :chunk.index(b"0000PACK")
-        ]
-        push_data = chunk_header[
-            :chunk_header.index(b"\x00")
-        ].decode(
-            "latin1", errors="ignore",
-        )
-        push_options["branch"] = push_data.split()[-1]
-        chunk_header = chunk_header[
-            chunk_header.index(b"\x00"):
-        ]
-        if b"0000" in chunk_header:
-            chunk_header = chunk_header[
-                chunk_header.index(b"0000") + 4:
-            ]
-            chunk_header = chunk_header.decode(
-                "latin1", errors="ignore",
-            )
-            while chunk_header:
-                chunk_header_size = int(chunk_header[:4], 16)
-                chunk_header_value = chunk_header[4:chunk_header_size]
-                chunk_header = chunk_header[chunk_header_size:]
-                if "=" in chunk_header_value:
-                    key, value = chunk_header_value.split("=")
-                    push_options[key] = value
-    return push_options
-
-# Handle Git HTTP Backend requests
-async def handle_git_backend_request(request):
-    # TODO OAuth -> Client SPA when on loopback, backend on relays
-    pass
-
-async def write_to_git(stdin, request, response, push_options):
-    try:
-        async for chunk in request.content.iter_chunked(4096):
-            push_options.update(parse_push_options(chunk))
-            stdin.write(chunk)
-        await stdin.drain()
-    except Exception as e:
-        print(f"Error writing to git http-backend: {traceback.format_exc()}", file=sys.stderr)
-    finally:
-        if not stdin.is_closing():
-            stdin.close()
-
-# Read the response from git http-backend and send it back to the client
-async def read_from_git(stdout, request, response):
-    headers = {}
-    headers_received = False
-    buffer = b""
-
-    while True:
-        chunk = await stdout.read(4096)
-        if not chunk:
-            break
-        buffer += chunk
-        if not headers_received:
-            header_end = buffer.find(b'\r\n\r\n')
-            if header_end != -1:
-                header_data = buffer[:header_end].decode('utf-8', errors='replace')
-                body = buffer[header_end+4:]
-                # Parse headers
-                for line in header_data.split('\r\n'):
-                    if line:
-                        key, value = line.split(':', 1)
-                        headers[key.strip()] = value.strip()
-                # Send headers to the client
-                for key, value in headers.items():
-                    response.headers[key] = value
-                await response.prepare(request)
-                await response.write(body)
-                headers_received = True
-                buffer = b""
-        else:
-            # Send body to the client
-            await response.write(chunk)
-    if not headers_received:
-        # If no headers were sent, send what we have
-        await response.prepare(request)
-        await response.write(buffer)
-    await response.write_eof()
-
-# Set up the application
-app = web.Application()
-app.router.add_route("*", "/{namespace}/{repo}.git/{path:.*}", handle_git_backend_request)
-
-class AioHTTPGitHTTPBackend:
-    @abc.abstractmethod
-    async def on_startup(self, app):
-        pass
-
-    @abc.abstractmethod
-    async def on_cleanup(self, app):
-        pass
-
-    @abc.abstractmethod
-    async def pre_git_http_backend(self, request, namespace, repo_name, local_repo_path):
-        pass
-
-    @abc.abstractmethod
-    async def git_receive_pack(self, request, namespace, repo_name, local_repo_path, push_options):
-        pass
-
-    async def git_http_backend(self, request):
-        for find_git_url_path_end in [
-            "/info/refs",
-            "/git-upload-pack",
-            "/git-receive-pack",
-        ]:
-            if request.path.endswith(find_git_url_path_end):
-                git_path = request.path[
-                    request.path.index(find_git_url_path_end):
-                ]
-                path_components = request.path[
-                    :request.path.index(find_git_url_path_end)
-                ].split("/")
-                namespace = path_components[-2]
-                repo_name = path_components[-1]
-                break
-
-        if repo_name.endswith(".git"):
-            repo_name = repo_name[:-4]
-
-        local_repo_path = Path(self.git_project_root, namespace, f"{repo_name}.git")
-
-        # Create repo if it should exist
-        await self.pre_git_http_backend(request, namespace, repo_name, local_repo_path)
-
-        # TODO Replace file with original after proc.wait()
-        subprocess.run(
-            ["git", "config", "receive.advertisePushOptions", "true"],
-            cwd=str(local_repo_path),
-        )
-
-        path_info = f"{repo_name}.git{git_path}"
-        print(f"path_info: {namespace}/{path_info}")
-        env = {
-            "GIT_PROJECT_ROOT": str(local_repo_path.parent),
-            "GIT_HTTP_EXPORT_ALL": "1",
-            "PATH_INFO": f"/{path_info}",
-            "REMOTE_USER": request.remote or "",
-            "REMOTE_ADDR": request.transport.get_extra_info("peername")[0],
-            "REQUEST_METHOD": request.method,
-            "QUERY_STRING": request.query_string,
-            "CONTENT_TYPE": request.headers.get("Content-Type", ""),
-        }
-
-        # Copy relevant HTTP headers to environment variables
-        for header in ("Content-Type", "User-Agent", "Accept-Encoding", "Pragma"):
-            header_value = request.headers.get(header)
-            if header_value:
-                env["HTTP_" + header.upper().replace("-", "_")] = header_value
-
-        # Prepare the subprocess to run git http-backend
-        proc = await asyncio.create_subprocess_exec(
-            "git", "http-backend",
-            env=env,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=sys.stderr,  # Output stderr to the server's stderr
-        )
-
-        # Push options are parsed from git client upload pack
-        push_options = {}
-
-        # Create a StreamResponse to send data back to the client
-        response = web.StreamResponse()
-
-        # Run the read and write tasks concurrently
-        await asyncio.gather(
-            write_to_git(proc.stdin, request, response, push_options),
-            read_from_git(proc.stdout, request, response),
-            proc.wait(),
-        )
-
-        push_options = PushOptions(**push_options)
-
-        # Handle push events (git-receive-pack)
-        if path_info.endswith("git-receive-pack"):
-            await self.git_receive_pack(
-                request,
-                namespace,
-                repo_name,
-                local_repo_path,
-                push_options,
-            )
-
-        return response
-
 
 class AioHTTPGitHTTPBackendATProtoConfig(BaseModel):
     atproto_base_url: str
@@ -618,7 +342,7 @@ class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
         self.atproto_index = atproto_index
 
     async def on_startup(self, app):
-        self.app_key = web.AppKey(
+        self.app_key = aiohttp.web.AppKey(
             "git_http_backend_atproto_client",
             AsyncClient,
         )
@@ -751,7 +475,7 @@ class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
                     local_repo_path,
                     internal_file,
                 )
-                for internal_file in list_git_internal_files(local_repo_path)
+                for internal_file in git_subprocess.list_git_internal_files(local_repo_path)
             ]
         )
 
@@ -854,21 +578,3 @@ class AioHTTPGitHTTPBackendATProto(AioHTTPGitHTTPBackend):
                     )
                     if created:
                         print(f"Updated pull_request to {namespace}/{push_options.pr_repo}: {pull_request}")
-
-    def make_middleware(self):
-        @web.middleware
-        async def middleware(request, handler):
-            nonlocal self
-            snoop.pp(request.path)
-            if (
-                request.path.endswith("/info/refs")
-                or request.path.endswith("git-upload-pack")
-                or request.path.endswith("git-receive-pack")
-            ):
-                return await self.git_http_backend(request)
-            return await handler(request)
-        return middleware
-
-if __name__ == "__main__":
-    # Start the server
-    web.run_app(app, host="0.0.0.0", port=8080)

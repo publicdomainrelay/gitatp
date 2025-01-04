@@ -1,10 +1,14 @@
 import asyncio
-
+import argparse
+import configparser
 import textwrap
 import pathlib
 import subprocess
 
-from .git_http_backend import *
+from .aiohttp_middleware.atproto_index import (
+    AioHTTPGitHTTPBackendATProtoConfig,
+    AioHTTPGitHTTPBackendATProto,
+)
 
 import magic
 import keyring
@@ -119,7 +123,7 @@ def make_parser():
     parser.add_argument('--repos-directory', required=True, dest="repos_directory", help='directory for local copies of git repos')
 
     config = configparser.ConfigParser()
-    config.read(str(Path("~", ".gitconfig").expanduser()))
+    config.read(str(pathlib.Path("~", ".gitconfig").expanduser()))
 
     try:
         atproto_handle = config["user"]["atproto"]
